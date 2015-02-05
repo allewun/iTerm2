@@ -9,6 +9,7 @@
 #import "PSMYosemiteTabStyle.h"
 #import "PSMTabBarCell.h"
 #import "PSMTabBarControl.h"
+#import "iTermPreferences.h"
 
 #define kPSMMetalObjectCounterRadius 7.0
 #define kPSMMetalCounterMinWidth 20
@@ -292,6 +293,18 @@
     return textColor;
 }
 
+- (NSColor *)secondaryTextColorFromPrimaryColor:(NSColor *)color {
+    CGFloat h, s, b, a;
+    [[color colorUsingColorSpace:[NSColorSpace deviceRGBColorSpace]] getHue:&h
+                                                                 saturation:&s
+                                                                 brightness:&b
+                                                                      alpha:&a];
+    return [NSColor colorWithHue:h
+                      saturation:s
+                      brightness:MIN(1.0, MAX(0, b + (b < 0.5 ? 0.5 : -0.5)))
+                           alpha:a];
+}
+
 - (NSAttributedString *)attributedStringValueForTabCell:(PSMTabBarCell *)cell {
     NSMutableAttributedString *attrStr;
     NSString *contents = [cell stringValue];
@@ -308,6 +321,21 @@
                     value:textColor
                     range:range];
 
+    // Style current job name
+    if ([iTermPreferences boolForKey:kPreferenceKeyShowJobName]) {
+        NSRegularExpression* regex = [NSRegularExpression regularExpressionWithPattern:@"\\(.+\\)$" options:0 error:nil];
+        
+        NSRange activityIndicatorRange = [regex rangeOfFirstMatchInString:contents
+                                                                  options:0
+                                                                    range:NSMakeRange(0, contents.length)];
+        
+        if (activityIndicatorRange.location != NSNotFound) {
+            [attrStr addAttribute:NSForegroundColorAttributeName
+                            value:[self secondaryTextColorFromPrimaryColor:textColor]
+                            range:activityIndicatorRange];
+        }
+    }
+    
     // Paragraph Style for Truncating Long Text
     static NSMutableParagraphStyle *truncatingTailParagraphStyle = nil;
     if (!truncatingTailParagraphStyle) {
