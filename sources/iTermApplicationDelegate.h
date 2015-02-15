@@ -70,6 +70,7 @@ int DebugLogImpl(const char *file, int line, const char *function, NSString* val
 - (IBAction)toggleToolbeltTool:(NSMenuItem *)menuItem;
 - (IBAction)toggleFullScreenTabBar:(id)sender;
 - (IBAction)maximizePane:(id)sender;
+- (IBAction)toggleHotkeyWindowPinning:(id)sender;
 - (IBAction)toggleUseTransparency:(id)sender;
 - (IBAction)toggleSecureInput:(id)sender;
 

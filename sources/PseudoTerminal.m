@@ -3147,6 +3147,11 @@ static const CGFloat kHorizontalTabBarHeight = 22;
     [self toggleTraditionalFullScreenMode];
 }
 
+- (void)toggleHotkeyWindowPinning {
+    [iTermPreferences setBool:![iTermPreferences boolForKey:kPreferenceKeyHotkeyAutoHides]
+                       forKey:kPreferenceKeyHotkeyAutoHides];
+}
+
 - (void)delayedEnterFullscreen
 {
     if (windowType_ == WINDOW_TYPE_LION_FULL_SCREEN &&
