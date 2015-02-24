@@ -1106,11 +1106,6 @@ static BOOL hasBecomeActive = NO;
     [self updateMaximizePaneMenuItem];
 }
 
-- (IBAction)toggleHotkeyWindowPinning:(id)sender
-{
-    [[[iTermController sharedInstance] currentTerminal] toggleHotkeyWindowPinning];
-}
-
 - (IBAction)toggleUseTransparency:(id)sender
 {
     [[[iTermController sharedInstance] currentTerminal] toggleUseTransparency:sender];

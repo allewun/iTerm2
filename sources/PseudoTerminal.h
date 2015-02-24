@@ -154,9 +154,6 @@ extern NSString *const kPseudoTerminalStateRestorationWindowArrangementKey;
 // Toggle non-Lion fullscreen mode.
 - (void)toggleTraditionalFullScreenMode;
 
-// Toggle pinning of the hotkey window
-- (void)toggleHotkeyWindowPinning;
-
 // accessor
 - (BOOL)fullScreenTabControl;
 
