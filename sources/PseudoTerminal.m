@@ -2693,6 +2693,12 @@ static const CGFloat kHorizontalTabBarHeight = 22;
     }
 
     [self maybeHideHotkeyWindow];
+    
+    // if hotkey window shouldn't auto hide, then it should float when losing focus
+    if ([self hotkeyWindowToHide]) {
+        BOOL shouldHotkeyWindowAutoHide = [iTermPreferences boolForKey:kPreferenceKeyHotkeyAutoHides];
+        [self window].level = shouldHotkeyWindowAutoHide ? NSNormalWindowLevel : NSFloatingWindowLevel;
+    }
 
     tabBarControl.flashing = NO;
     tabBarControl.cmdPressed = NO;

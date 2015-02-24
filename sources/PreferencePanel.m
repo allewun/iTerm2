@@ -227,6 +227,9 @@ NSString *const kSessionProfileDidChange = @"kSessionProfileDidChange";
 - (void)run {
     [_generalPreferencesViewController updateEnabledState];
     [_profilesViewController selectFirstProfileIfNecessary];
+    
+    [self window].level = [[[iTermController sharedInstance] currentTerminal] window].level;
+
     [self showWindow:self];
     [[self window] makeKeyAndOrderFront:self];
 }
