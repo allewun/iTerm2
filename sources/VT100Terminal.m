@@ -10,6 +10,7 @@
 @property(nonatomic, assign) BOOL reportFocus;
 @property(nonatomic, assign) BOOL reverseVideo;
 @property(nonatomic, assign) BOOL originMode;
+@property(nonatomic, assign) BOOL moreFix;
 @property(nonatomic, assign) BOOL isAnsi;
 @property(nonatomic, assign) BOOL autorepeatMode;
 @property(nonatomic, assign) int charset;
@@ -25,6 +26,37 @@
 
 @end
 
+#define NUM_CHARSETS 4
+
+typedef struct {
+    BOOL bold;
+    BOOL blink;
+    BOOL under;
+    BOOL reversed;
+    BOOL faint;
+    BOOL italic;
+    // TODO: Add invisible and protected
+
+    int fgColorCode;
+    int fgGreen;
+    int fgBlue;
+    ColorMode fgColorMode;
+
+    int bgColorCode;
+    int bgGreen;
+    int bgBlue;
+    ColorMode bgColorMode;
+} VT100GraphicRendition;
+
+typedef struct {
+    VT100GridCoord position;
+    int charset;
+    BOOL lineDrawing[NUM_CHARSETS];
+    VT100GraphicRendition graphicRendition;
+    BOOL origin;
+    BOOL wraparound;
+} VT100SavedCursor;
+
 @implementation VT100Terminal {
     // True if receiving a file in multitoken mode, or if between BeginFile and
     // EndFile codes (which are deprecated).
@@ -39,30 +71,12 @@
     BOOL xon_;               // YES=XON, NO=XOFF. Not currently used.
     BOOL numLock_;           // YES=ON, NO=OFF, default=YES;
 
-    int fgColorCode_;
-    int fgGreen_;
-    int fgBlue_;
-    ColorMode fgColorMode_;
-    int bgColorCode_;
-    int bgGreen_;
-    int bgBlue_;
-    ColorMode bgColorMode_;
-    BOOL faint_, bold_, italic_, under_, blink_, reversed_;
+    VT100GraphicRendition graphicRendition_;
 
-    BOOL saveFaint_, saveBold_, saveItalic_, saveUnder_, saveBlink_, saveReversed_;
-    int saveCharset_;
-    int saveForeground_;
-    int saveFgGreen_;
-    int saveFgBlue_;
-    ColorMode saveFgColorMode_;
-    int saveBackground_;
-    int saveBgGreen_;
-    int saveBgBlue_;
-    ColorMode saveBgColorMode_;
-    BOOL saveOriginMode_;
-    BOOL saveWraparoundMode_;
-    BOOL saveReverseWraparoundMode_;
+    VT100SavedCursor mainSavedCursor_;
+    VT100SavedCursor altSavedCursor_;
 
+    // TODO: Actually use this.
     int sendModifiers_[NUM_MODIFIABLE_RESOURCES];
 }
 
@@ -132,8 +146,7 @@ static const int kMaxScreenRows = 4096;
 
 #pragma mark - Instance methods
 
-- (id)init
-{
+- (id)init {
     self = [super init];
     if (self) {
         _output = [[VT100Output alloc] init];
@@ -145,17 +158,17 @@ static const int kMaxScreenRows = 4096;
         _reverseWraparoundMode = NO;
         _autorepeatMode = YES;
         xon_ = YES;
-        fgColorCode_ = ALTSEM_DEFAULT;
-        fgColorMode_ = ColorModeAlternate;
-        bgColorCode_ = ALTSEM_DEFAULT;
-        bgColorMode_ = ColorModeAlternate;
+        graphicRendition_.fgColorCode = ALTSEM_DEFAULT;
+        graphicRendition_.fgColorMode = ColorModeAlternate;
+        graphicRendition_.bgColorCode = ALTSEM_DEFAULT;
+        graphicRendition_.bgColorMode = ColorModeAlternate;
         _mouseMode = MOUSE_REPORTING_NONE;
         _mouseFormat = MOUSE_FORMAT_XTERM;
 
         _allowKeypadMode = YES;
 
         numLock_ = YES;
-        [self saveTextAttributes];  // initialize save area
+        [self saveCursor];  // initialize save area
     }
     return self;
 }
@@ -205,67 +218,23 @@ static const int kMaxScreenRows = 4096;
     [delegate_ terminalTypeDidChange];
 }
 
-- (void)saveTextAttributes
-{
-    saveBold_ = bold_;
-    saveFaint_ = faint_;
-    saveItalic_ = italic_;
-    saveUnder_ = under_;
-    saveBlink_ = blink_;
-    saveReversed_ = reversed_;
-    saveCharset_ = _charset;
-    saveForeground_ = fgColorCode_;
-    saveFgGreen_ = fgGreen_;
-    saveFgBlue_ = fgBlue_;
-    saveFgColorMode_ = fgColorMode_;
-    saveBackground_ = bgColorCode_;
-    saveBgGreen_ = bgGreen_;
-    saveBgBlue_ = bgBlue_;
-    saveBgColorMode_ = bgColorMode_;
-    saveOriginMode_ = self.originMode;
-    saveWraparoundMode_ = self.wraparoundMode;
-    saveReverseWraparoundMode_ = self.reverseWraparoundMode;
-}
-
-- (void)restoreTextAttributes
-{
-    bold_ = saveBold_;
-    faint_ = saveFaint_;
-    italic_ = saveItalic_;
-    under_ = saveUnder_;
-    blink_ = saveBlink_;
-    reversed_ = saveReversed_;
-    _charset = saveCharset_;
-    fgColorCode_ = saveForeground_;
-    fgGreen_ = saveFgGreen_;
-    fgBlue_ = saveFgBlue_;
-    fgColorMode_ = saveFgColorMode_;
-    bgColorCode_ = saveBackground_;
-    bgGreen_ = saveBgGreen_;
-    bgBlue_ = saveBgBlue_;
-    bgColorMode_ = saveBgColorMode_;
-    self.originMode = saveOriginMode_;
-    self.wraparoundMode = saveWraparoundMode_;
-    self.reverseWraparoundMode = saveReverseWraparoundMode_;
-}
-
 - (void)setForeground24BitColor:(NSColor *)color {
-    fgColorCode_ = color.redComponent * 255.0;
-    fgGreen_ = color.greenComponent * 255.0;
-    fgBlue_ = color.blueComponent * 255.0;
-    fgColorMode_ = ColorMode24bit;
+    graphicRendition_.fgColorCode = color.redComponent * 255.0;
+    graphicRendition_.fgGreen = color.greenComponent * 255.0;
+    graphicRendition_.fgBlue = color.blueComponent * 255.0;
+    graphicRendition_.fgColorMode = ColorMode24bit;
 }
 
 - (void)setForegroundColor:(int)fgColorCode alternateSemantics:(BOOL)altsem
 {
-    fgColorCode_ = fgColorCode;
-    fgColorMode_ = (altsem ? ColorModeAlternate : ColorModeNormal);
+    graphicRendition_.fgColorCode = fgColorCode;
+    graphicRendition_.fgColorMode = (altsem ? ColorModeAlternate : ColorModeNormal);
 }
 
 - (void)setBackgroundColor:(int)bgColorCode alternateSemantics:(BOOL)altsem
 {
-    bgColorCode_ = bgColorCode;
-    bgColorMode_ = (altsem ? ColorModeAlternate : ColorModeNormal);
+    graphicRendition_.bgColorCode = bgColorCode;
+    graphicRendition_.bgColorMode = (altsem ? ColorModeAlternate : ColorModeNormal);
 }
 
 - (void)resetCharset {
@@ -275,14 +244,14 @@ static const int kMaxScreenRows = 4096;
     }
 }
 
-- (void)resetPreservingPrompt:(BOOL)preservePrompt
-{
+- (void)resetPreservingPrompt:(BOOL)preservePrompt {
     self.lineMode = NO;
     self.cursorMode = NO;
     self.columnMode = NO;
     self.scrollMode = NO;
     _reverseVideo = NO;
     _originMode = NO;
+    _moreFix = NO;
     self.wraparoundMode = YES;
     self.reverseWraparoundMode = NO;
     self.autorepeatMode = YES;
@@ -291,18 +260,10 @@ static const int kMaxScreenRows = 4096;
     self.bracketedPasteMode = NO;
     _charset = 0;
     xon_ = YES;
-    faint_ = bold_ = italic_ = blink_ = reversed_ = under_ = NO;
-    fgColorCode_ = ALTSEM_DEFAULT;
-    fgGreen_ = 0;
-    fgBlue_ = 0;
-    fgColorMode_ = ColorModeAlternate;
-    bgColorCode_ = ALTSEM_DEFAULT;
-    bgGreen_ = 0;
-    bgBlue_ = 0;
-    bgColorMode_ = ColorModeAlternate;
+    [self resetGraphicRendition];
     self.mouseMode = MOUSE_REPORTING_NONE;
     self.mouseFormat = MOUSE_FORMAT_XTERM;
-    [self saveTextAttributes];  // reset saved text attributes
+    [self saveCursor];  // reset saved text attributes
     [delegate_ terminalMouseModeDidChangeTo:_mouseMode];
     [delegate_ terminalSetUseColumnScrollRegion:NO];
     _reportFocus = NO;
@@ -312,6 +273,11 @@ static const int kMaxScreenRows = 4096;
     receivingFile_ = NO;
     _encoding = _canonicalEncoding;
     _parser.encoding = _canonicalEncoding;
+    for (int i = 0; i < NUM_CHARSETS; i++) {
+        mainSavedCursor_.lineDrawing[i] = NO;
+        altSavedCursor_.lineDrawing[i] = NO;
+    }
+    [self resetSavedCursorPositions];
     [delegate_ terminalResetPreservingPrompt:preservePrompt];
 }
 
@@ -349,26 +315,27 @@ static const int kMaxScreenRows = 4096;
 - (screen_char_t)foregroundColorCode
 {
     screen_char_t result = { 0 };
-    if (reversed_) {
-        if (bgColorMode_ == ColorModeAlternate && bgColorCode_ == ALTSEM_DEFAULT) {
+    if (graphicRendition_.reversed) {
+        if (graphicRendition_.bgColorMode == ColorModeAlternate &&
+            graphicRendition_.bgColorCode == ALTSEM_DEFAULT) {
             result.foregroundColor = ALTSEM_REVERSED_DEFAULT;
         } else {
-            result.foregroundColor = bgColorCode_;
+            result.foregroundColor = graphicRendition_.bgColorCode;
         }
-        result.fgGreen = bgGreen_;
-        result.fgBlue = bgBlue_;
-        result.foregroundColorMode = bgColorMode_;
+        result.fgGreen = graphicRendition_.bgGreen;
+        result.fgBlue = graphicRendition_.bgBlue;
+        result.foregroundColorMode = graphicRendition_.bgColorMode;
     } else {
-        result.foregroundColor = fgColorCode_;
-        result.fgGreen = fgGreen_;
-        result.fgBlue = fgBlue_;
-        result.foregroundColorMode = fgColorMode_;
+        result.foregroundColor = graphicRendition_.fgColorCode;
+        result.fgGreen = graphicRendition_.fgGreen;
+        result.fgBlue = graphicRendition_.fgBlue;
+        result.foregroundColorMode = graphicRendition_.fgColorMode;
     }
-    result.bold = bold_;
-    result.faint = faint_;
-    result.italic = italic_;
-    result.underline = under_;
-    result.blink = blink_;
+    result.bold = graphicRendition_.bold;
+    result.faint = graphicRendition_.faint;
+    result.italic = graphicRendition_.italic;
+    result.underline = graphicRendition_.under;
+    result.blink = graphicRendition_.blink;
     result.image = NO;
     return result;
 }
@@ -376,20 +343,21 @@ static const int kMaxScreenRows = 4096;
 - (screen_char_t)backgroundColorCode
 {
     screen_char_t result = { 0 };
-    if (reversed_) {
-        if (fgColorMode_ == ColorModeAlternate && fgColorCode_ == ALTSEM_DEFAULT) {
+    if (graphicRendition_.reversed) {
+        if (graphicRendition_.fgColorMode == ColorModeAlternate &&
+            graphicRendition_.fgColorCode == ALTSEM_DEFAULT) {
             result.backgroundColor = ALTSEM_REVERSED_DEFAULT;
         } else {
-            result.backgroundColor = fgColorCode_;
+            result.backgroundColor = graphicRendition_.fgColorCode;
         }
-        result.bgGreen = fgGreen_;
-        result.bgBlue = fgBlue_;
-        result.backgroundColorMode = fgColorMode_;
+        result.bgGreen = graphicRendition_.fgGreen;
+        result.bgBlue = graphicRendition_.fgBlue;
+        result.backgroundColorMode = graphicRendition_.fgColorMode;
     } else {
-        result.backgroundColor = bgColorCode_;
-        result.bgGreen = bgGreen_;
-        result.bgBlue = bgBlue_;
-        result.backgroundColorMode = bgColorMode_;
+        result.backgroundColor = graphicRendition_.bgColorCode;
+        result.bgGreen = graphicRendition_.bgGreen;
+        result.bgBlue = graphicRendition_.bgBlue;
+        result.backgroundColorMode = graphicRendition_.bgColorMode;
     }
     return result;
 }
@@ -397,25 +365,25 @@ static const int kMaxScreenRows = 4096;
 - (screen_char_t)foregroundColorCodeReal
 {
     screen_char_t result = { 0 };
-    result.foregroundColor = fgColorCode_;
-    result.fgGreen = fgGreen_;
-    result.fgBlue = fgBlue_;
-    result.foregroundColorMode = fgColorMode_;
-    result.bold = bold_;
-    result.faint = faint_;
-    result.italic = italic_;
-    result.underline = under_;
-    result.blink = blink_;
+    result.foregroundColor = graphicRendition_.fgColorCode;
+    result.fgGreen = graphicRendition_.fgGreen;
+    result.fgBlue = graphicRendition_.fgBlue;
+    result.foregroundColorMode = graphicRendition_.fgColorMode;
+    result.bold = graphicRendition_.bold;
+    result.faint = graphicRendition_.faint;
+    result.italic = graphicRendition_.italic;
+    result.underline = graphicRendition_.under;
+    result.blink = graphicRendition_.blink;
     return result;
 }
 
 - (screen_char_t)backgroundColorCodeReal
 {
     screen_char_t result = { 0 };
-    result.backgroundColor = bgColorCode_;
-    result.bgGreen = bgGreen_;
-    result.bgBlue = bgBlue_;
-    result.backgroundColorMode = bgColorMode_;
+    result.backgroundColor = graphicRendition_.bgColorCode;
+    result.bgGreen = graphicRendition_.bgGreen;
+    result.bgBlue = graphicRendition_.bgBlue;
+    result.backgroundColorMode = graphicRendition_.bgColorMode;
     return result;
 }
 
@@ -427,421 +395,332 @@ static const int kMaxScreenRows = 4096;
     }
 }
 
-- (void)executeModeUpdates:(VT100Token *)token
-{
-    BOOL mode;
-    int i;
+- (void)executeDecSetReset:(VT100Token *)token {
+    assert(token->type == VT100CSI_DECSET ||
+           token->type == VT100CSI_DECRST);
+    BOOL mode = (token->type == VT100CSI_DECSET);
 
-    switch (token->type) {
-        case VT100CSI_DECSET:
-        case VT100CSI_DECRST:
-            mode = (token->type == VT100CSI_DECSET);
-
-            for (i = 0; i < token.csi->count; i++) {
-                switch (token.csi->p[i]) {
-                    case 1:
-                        self.cursorMode = mode;
-                        break;
-                    case 2:
-                        ansiMode_ = mode;
-                        break;
-                    case 3:
-                        self.columnMode = mode;
-                        break;
-                    case 4:
-                        self.scrollMode = mode;
-                        break;
-                    case 5:
-                        self.reverseVideo = mode;
-                        [delegate_ terminalNeedsRedraw];
-                        break;
-                    case 6:
-                        self.originMode = mode;
-                        [delegate_ terminalMoveCursorToX:1 y:1];
-                        break;
-                    case 7:
-                        self.wraparoundMode = mode;
-                        break;
-                    case 8:
-                        self.autorepeatMode = mode;
-                        break;
-                    case 9:
-                        // TODO: This should send mouse x&y on button press.
-                        break;
-                    case 20:
-                        self.lineMode = mode;
-                        break;
-                    case 25:
-                        [delegate_ terminalSetCursorVisible:mode];
-                        break;
-                    case 40:
-                        self.allowColumnMode = mode;
-                        break;
-                    case 45:
-                        self.reverseWraparoundMode = mode;
-                        break;
-                    case 47:
-                        // alternate screen buffer mode
-                        if (!self.disableSmcupRmcup) {
-                            if (mode) {
-                                [delegate_ terminalShowAltBuffer];
-                            } else {
-                                [delegate_ terminalShowPrimaryBufferRestoringCursor:NO];
-                            }
-                        }
-                        break;
-
-                    case 69:
-                        [delegate_ terminalSetUseColumnScrollRegion:mode];
-                        break;
-
-                    case 1000:
-                    // case 1001:
-                        // TODO: MOUSE_REPORTING_HILITE not implemented.
-                    case 1002:
-                    case 1003:
-                        if (mode) {
-                            self.mouseMode = token.csi->p[i] - 1000;
-                        } else {
-                            self.mouseMode = MOUSE_REPORTING_NONE;
-                        }
-                        [delegate_ terminalMouseModeDidChangeTo:_mouseMode];
-                        break;
-                    case 1004:
-                        self.reportFocus = mode;
-                        break;
-
-                    case 1005:
-                        if (mode) {
-                            self.mouseFormat = MOUSE_FORMAT_XTERM_EXT;
-                        } else {
-                            self.mouseFormat = MOUSE_FORMAT_XTERM;
-                        }
-                        break;
-
-
-                    case 1006:
-                        if (mode) {
-                            self.mouseFormat = MOUSE_FORMAT_SGR;
-                        } else {
-                            self.mouseFormat = MOUSE_FORMAT_XTERM;
-                        }
-                        break;
-
-                    case 1015:
-                        if (mode) {
-                            self.mouseFormat = MOUSE_FORMAT_URXVT;
-                        } else {
-                            self.mouseFormat = MOUSE_FORMAT_XTERM;
-                        }
-                        break;
-                    case 1049:
-                        // From the xterm release log:
-                        // Implement new escape sequence, private mode 1049, which combines
-                        // the switch to/from alternate screen mode with screen clearing and
-                        // cursor save/restore.  Unlike the existing escape sequence, this
-                        // clears the alternate screen when switching to it rather than when
-                        // switching to the normal screen, thus retaining the alternate screen
-                        // contents for select/paste operations.
-                        if (!self.disableSmcupRmcup) {
-                            if (mode) {
-                                [self saveTextAttributes];
-                                [delegate_ terminalSaveCharsetFlags];
-                                [delegate_ terminalShowAltBuffer];
-                                [delegate_ terminalClearScreen];
-                            } else {
-                                [delegate_ terminalShowPrimaryBufferRestoringCursor:YES];
-                                [self restoreTextAttributes];
-                                [delegate_ terminalRestoreCharsetFlags];
-                            }
-                        }
-                        break;
-
-                    case 2004:
-                        // Set bracketed paste mode
-                        self.bracketedPasteMode = mode;
-                        break;
-
+    for (int i = 0; i < token.csi->count; i++) {
+        switch (token.csi->p[i]) {
+            case 1:
+                self.cursorMode = mode;
+                break;
+            case 2:
+                ansiMode_ = mode;
+                break;
+            case 3:
+                if (self.allowColumnMode) {
+                    self.columnMode = mode;
+                    [delegate_ terminalSetWidth:(self.columnMode ? 132 : 80)];
                 }
-            }
-            break;
-        case VT100CSI_SM:
-        case VT100CSI_RM:
-            mode = (token->type == VT100CSI_SM);
+                break;
+            case 4:
+                self.scrollMode = mode;
+                break;
+            case 5:
+                self.reverseVideo = mode;
+                [delegate_ terminalNeedsRedraw];
+                break;
+            case 6:
+                self.originMode = mode;
+                [delegate_ terminalMoveCursorToX:1 y:1];
+                break;
+            case 7:
+                self.wraparoundMode = mode;
+                break;
+            case 8:
+                self.autorepeatMode = mode;
+                break;
+            case 9:
+                // TODO: This should send mouse x&y on button press.
+                break;
+            case 20:
+                self.lineMode = mode;
+                break;
+            case 25:
+                [delegate_ terminalSetCursorVisible:mode];
+                break;
+            case 40:
+                self.allowColumnMode = mode;
+                break;
+            case 41:
+                self.moreFix = mode;
+                break;
+            case 45:
+                self.reverseWraparoundMode = mode;
+                break;
+            case 47:
+                // alternate screen buffer mode
+                if (!self.disableSmcupRmcup) {
+                    if (mode) {
+                        int x = [delegate_ terminalCursorX];
+                        int y = [delegate_ terminalCursorY];
+                        [delegate_ terminalShowAltBuffer];
+                        [delegate_ terminalSetCursorX:x];
+                        [delegate_ terminalSetCursorY:y];
+                    } else {
+                        int x = [delegate_ terminalCursorX];
+                        int y = [delegate_ terminalCursorY];
+                        [delegate_ terminalShowPrimaryBuffer];
+                        [delegate_ terminalSetCursorX:x];
+                        [delegate_ terminalSetCursorY:y];
+                    }
+                }
+                break;
 
-            for (i = 0; i < token.csi->count; i++) {
-                switch (token.csi->p[i]) {
-                    case 4:
-                        self.insertMode = mode;
-                        break;
-                }
-            }
-            break;
-        case VT100CSI_DECKPAM:
-            self.keypadMode = YES;
-            break;
-        case VT100CSI_DECKPNM:
-            self.keypadMode = NO;
-            break;
-        case VT100CC_SI:
-            _charset = 0;
-            break;
-        case VT100CC_SO:
-            _charset = 1;
-            break;
-        case VT100CC_DC1:
-            xon_ = YES;
-            break;
-        case VT100CC_DC3:
-            xon_ = NO;
-            break;
-        case VT100CSI_DECSTR:
-            self.wraparoundMode = YES;
-            self.reverseWraparoundMode = NO;
-            // resetSGR is performed prior to the switch, which takes care of various other flags.
-            break;
-        case VT100CSI_RESET_MODIFIERS:
-            if (token.csi->count == 0) {
-                sendModifiers_[2] = -1;
-            } else {
-                int resource = token.csi->p[0];
-                if (resource >= 0 && resource <= NUM_MODIFIABLE_RESOURCES) {
-                    sendModifiers_[resource] = -1;
-                }
-            }
-            [delegate_ terminalSendModifiersDidChangeTo:sendModifiers_
-                                              numValues:NUM_MODIFIABLE_RESOURCES];
-            break;
+            case 69:
+                [delegate_ terminalSetUseColumnScrollRegion:mode];
+                break;
 
-        case VT100CSI_SET_MODIFIERS: {
-            if (token.csi->count == 0) {
-                for (int j = 0; j < NUM_MODIFIABLE_RESOURCES; j++) {
-                    sendModifiers_[j] = 0;
-                }
-            } else {
-                int resource = token.csi->p[0];
-                int value;
-                if (token.csi->count == 1) {
-                    value = 0;
+            case 1000:
+            // case 1001:
+            // TODO: MOUSE_REPORTING_HILITE not implemented.
+            case 1002:
+            case 1003:
+                if (mode) {
+                    self.mouseMode = token.csi->p[i] - 1000;
                 } else {
-                    value = token.csi->p[1];
+                    self.mouseMode = MOUSE_REPORTING_NONE;
                 }
-                if (resource >= 0 && resource < NUM_MODIFIABLE_RESOURCES && value >= 0) {
-                    sendModifiers_[resource] = value;
-                }
-            }
-            [delegate_ terminalSendModifiersDidChangeTo:sendModifiers_
-                                              numValues:NUM_MODIFIABLE_RESOURCES];
-            break;
-        }
+                [delegate_ terminalMouseModeDidChangeTo:_mouseMode];
+                break;
+            case 1004:
+                self.reportFocus = mode;
+                break;
 
-        default:
-            break;
+            case 1005:
+                if (mode) {
+                    self.mouseFormat = MOUSE_FORMAT_XTERM_EXT;
+                } else {
+                    self.mouseFormat = MOUSE_FORMAT_XTERM;
+                }
+                break;
+
+
+            case 1006:
+                if (mode) {
+                    self.mouseFormat = MOUSE_FORMAT_SGR;
+                } else {
+                    self.mouseFormat = MOUSE_FORMAT_XTERM;
+                }
+                break;
+
+            case 1015:
+                if (mode) {
+                    self.mouseFormat = MOUSE_FORMAT_URXVT;
+                } else {
+                    self.mouseFormat = MOUSE_FORMAT_XTERM;
+                }
+                break;
+            case 1049:
+                // From the xterm release log:
+                // Implement new escape sequence, private mode 1049, which combines
+                // the switch to/from alternate screen mode with screen clearing and
+                // cursor save/restore.  Unlike the existing escape sequence, this
+                // clears the alternate screen when switching to it rather than when
+                // switching to the normal screen, thus retaining the alternate screen
+                // contents for select/paste operations.
+                if (!self.disableSmcupRmcup) {
+                    if (mode) {
+                        [self saveCursor];
+                        [delegate_ terminalShowAltBuffer];
+                        [delegate_ terminalClearScreen];
+                    } else {
+                        [delegate_ terminalShowPrimaryBuffer];
+                        [self restoreCursor];
+                    }
+                }
+                break;
+
+            case 2004:
+                // Set bracketed paste mode
+                self.bracketedPasteMode = mode;
+                break;
+
+        }
     }
 }
 
-- (void)resetSGR {
-    // all attributes off
-    faint_ = bold_ = italic_ = under_ = blink_ = reversed_ = NO;
-    fgColorCode_ = ALTSEM_DEFAULT;
-    fgGreen_ = 0;
-    fgBlue_ = 0;
-    fgColorMode_ = ColorModeAlternate;
-    bgColorCode_ = ALTSEM_DEFAULT;
-    bgGreen_ = 0;
-    bgBlue_ = 0;
-    bgColorMode_ = ColorModeAlternate;
+- (void)resetGraphicRendition {
+    memset(&graphicRendition_, 0, sizeof(graphicRendition_));
 }
 
-- (void)executeSGR:(VT100Token *)token
-{
-    if (token->type == VT100CSI_SGR) {
-        if (token.csi->count == 0) {
-            [self resetSGR];
-        } else {
-            int i;
-            for (i = 0; i < token.csi->count; ++i) {
-                int n = token.csi->p[i];
-                switch (n) {
-                    case VT100CHARATTR_ALLOFF:
-                        // all attribute off
-                        faint_ = bold_ = italic_ = under_ = blink_ = reversed_ = NO;
-                        fgColorCode_ = ALTSEM_DEFAULT;
-                        fgGreen_ = 0;
-                        fgBlue_ = 0;
-                        bgColorCode_ = ALTSEM_DEFAULT;
-                        bgGreen_ = 0;
-                        bgBlue_ = 0;
-                        fgColorMode_ = ColorModeAlternate;
-                        bgColorMode_ = ColorModeAlternate;
-                        break;
-                    case VT100CHARATTR_BOLD:
-                        bold_ = YES;
-                        break;
-                    case VT100CHARATTR_FAINT:
-                        faint_ = YES;
-                        break;
-                    case VT100CHARATTR_NORMAL:
-                        faint_ = bold_ = NO;
-                        break;
-                    case VT100CHARATTR_ITALIC:
-                        italic_ = YES;
-                        break;
-                    case VT100CHARATTR_NOT_ITALIC:
-                        italic_ = NO;
-                        break;
-                    case VT100CHARATTR_UNDER:
-                        under_ = YES;
-                        break;
-                    case VT100CHARATTR_NOT_UNDER:
-                        under_ = NO;
-                        break;
-                    case VT100CHARATTR_BLINK:
-                        blink_ = YES;
-                        break;
-                    case VT100CHARATTR_STEADY:
-                        blink_ = NO;
-                        break;
-                    case VT100CHARATTR_REVERSE:
-                        reversed_ = YES;
-                        break;
-                    case VT100CHARATTR_POSITIVE:
-                        reversed_ = NO;
-                        break;
-                    case VT100CHARATTR_FG_DEFAULT:
-                        fgColorCode_ = ALTSEM_DEFAULT;
-                        fgGreen_ = 0;
-                        fgBlue_ = 0;
-                        fgColorMode_ = ColorModeAlternate;
-                        break;
-                    case VT100CHARATTR_BG_DEFAULT:
-                        bgColorCode_ = ALTSEM_DEFAULT;
-                        bgGreen_ = 0;
-                        bgBlue_ = 0;
-                        bgColorMode_ = ColorModeAlternate;
-                        break;
-                    case VT100CHARATTR_FG_256:
-                        /*
-                         First subparam means:   # additional subparams:  Accepts optional params:
-                         1: transparent          0                        NO
-                         2: RGB                  3                        YES
-                         3: CMY                  3                        YES
-                         4: CMYK                 4                        YES
-                         5: Indexed color        1                        NO
+- (void)executeSGR:(VT100Token *)token {
+    assert(token->type == VT100CSI_SGR);
+    if (token.csi->count == 0) {
+        [self resetGraphicRendition];
+    } else {
+        int i;
+        for (i = 0; i < token.csi->count; ++i) {
+            int n = token.csi->p[i];
+            switch (n) {
+                case VT100CHARATTR_ALLOFF:
+                    [self resetGraphicRendition];
+                    break;
+                case VT100CHARATTR_BOLD:
+                    graphicRendition_.bold = YES;
+                    break;
+                case VT100CHARATTR_FAINT:
+                    graphicRendition_.faint = YES;
+                    break;
+                case VT100CHARATTR_NORMAL:
+                    graphicRendition_.faint = graphicRendition_.bold = NO;
+                    break;
+                case VT100CHARATTR_ITALIC:
+                    graphicRendition_.italic = YES;
+                    break;
+                case VT100CHARATTR_NOT_ITALIC:
+                    graphicRendition_.italic = NO;
+                    break;
+                case VT100CHARATTR_UNDER:
+                    graphicRendition_.under = YES;
+                    break;
+                case VT100CHARATTR_NOT_UNDER:
+                    graphicRendition_.under = NO;
+                    break;
+                case VT100CHARATTR_BLINK:
+                    graphicRendition_.blink = YES;
+                    break;
+                case VT100CHARATTR_STEADY:
+                    graphicRendition_.blink = NO;
+                    break;
+                case VT100CHARATTR_REVERSE:
+                    graphicRendition_.reversed = YES;
+                    break;
+                case VT100CHARATTR_POSITIVE:
+                    graphicRendition_.reversed = NO;
+                    break;
+                case VT100CHARATTR_FG_DEFAULT:
+                    graphicRendition_.fgColorCode = ALTSEM_DEFAULT;
+                    graphicRendition_.fgGreen = 0;
+                    graphicRendition_.fgBlue = 0;
+                    graphicRendition_.fgColorMode = ColorModeAlternate;
+                    break;
+                case VT100CHARATTR_BG_DEFAULT:
+                    graphicRendition_.bgColorCode = ALTSEM_DEFAULT;
+                    graphicRendition_.bgGreen = 0;
+                    graphicRendition_.bgBlue = 0;
+                    graphicRendition_.bgColorMode = ColorModeAlternate;
+                    break;
+                case VT100CHARATTR_FG_256:
+                    /*
+                     First subparam means:   # additional subparams:  Accepts optional params:
+                     1: transparent          0                        NO
+                     2: RGB                  3                        YES
+                     3: CMY                  3                        YES
+                     4: CMYK                 4                        YES
+                     5: Indexed color        1                        NO
 
-                         Optional paramters go at position 7 and 8, and indicate toleranace as an
-                         integer; and color space (0=CIELUV, 1=CIELAB). Example:
+                     Optional paramters go at position 7 and 8, and indicate toleranace as an
+                     integer; and color space (0=CIELUV, 1=CIELAB). Example:
 
-                         CSI 38:2:255:128:64:0:5:1 m
+                     CSI 38:2:255:128:64:0:5:1 m
 
-                         Also accepted for xterm compatibility, but never with optional parameters:
-                         CSI 38;2;255;128;64 m
+                     Also accepted for xterm compatibility, but never with optional parameters:
+                     CSI 38;2;255;128;64 m
 
-                         Set the foreground color to red=255, green=128, blue=64 with a tolerance of
-                         5 in the CIELAB color space. The 0 at the 6th position has no meaning and
-                         is just a filler. */
+                     Set the foreground color to red=255, green=128, blue=64 with a tolerance of
+                     5 in the CIELAB color space. The 0 at the 6th position has no meaning and
+                     is just a filler. */
 
-                        if (token.csi->subCount[i] > 0) {
-                            // Preferred syntax using colons to delimit subparameters
-                            if (token.csi->subCount[i] >= 2 && token.csi->sub[i][0] == 5) {
-                                // CSI 38:5:P m
-                                fgColorCode_ = token.csi->sub[i][1];
-                                fgGreen_ = 0;
-                                fgBlue_ = 0;
-                                fgColorMode_ = ColorModeNormal;
-                            } else if (token.csi->subCount[i] >= 4 && token.csi->sub[i][0] == 2) {
-                                // CSI 38:2:R:G:B m
-                                // 24-bit color
-                                fgColorCode_ = token.csi->sub[i][1];
-                                fgGreen_ = token.csi->sub[i][2];
-                                fgBlue_ = token.csi->sub[i][3];
-                                fgColorMode_ = ColorMode24bit;
-                            }
-                        } else if (token.csi->count - i >= 3 && token.csi->p[i + 1] == 5) {
-                            // CSI 38;5;P m
-                            fgColorCode_ = token.csi->p[i + 2];
-                            fgGreen_ = 0;
-                            fgBlue_ = 0;
-                            fgColorMode_ = ColorModeNormal;
-                            i += 2;
-                        } else if (token.csi->count - i >= 5 && token.csi->p[i + 1] == 2) {
-                            // CSI 38;2;R;G;B m
-                            // 24-bit color support
-                            fgColorCode_ = token.csi->p[i + 2];
-                            fgGreen_ = token.csi->p[i + 3];
-                            fgBlue_ = token.csi->p[i + 4];
-                            fgColorMode_ = ColorMode24bit;
-                            i += 4;
-                        }
-                        break;
-                    case VT100CHARATTR_BG_256:
-                        if (token.csi->subCount[i] > 0) {
-                            // Preferred syntax using colons to delimit subparameters
-                            if (token.csi->subCount[i] >= 2 && token.csi->sub[i][0] == 5) {
-                                // CSI 48:5:P m
-                                bgColorCode_ = token.csi->sub[i][1];
-                                bgGreen_ = 0;
-                                bgBlue_ = 0;
-                                bgColorMode_ = ColorModeNormal;
-                            } else if (token.csi->subCount[i] >= 4 && token.csi->sub[i][0] == 2) {
-                                // CSI 48:2:R:G:B m
-                                // 24-bit color
-                                bgColorCode_ = token.csi->sub[i][1];
-                                bgGreen_ = token.csi->sub[i][2];
-                                bgBlue_ = token.csi->sub[i][3];
-                                bgColorMode_ = ColorMode24bit;
-                            }
-                        } else if (token.csi->count - i >= 3 && token.csi->p[i + 1] == 5) {
-                            // CSI 48;5;P m
-                            bgColorCode_ = token.csi->p[i + 2];
-                            bgGreen_ = 0;
-                            bgBlue_ = 0;
-                            bgColorMode_ = ColorModeNormal;
-                            i += 2;
-                        } else if (token.csi->count - i >= 5 && token.csi->p[i + 1] == 2) {
-                            // CSI 48;2;R;G;B m
+                    if (token.csi->subCount[i] > 0) {
+                        // Preferred syntax using colons to delimit subparameters
+                        if (token.csi->subCount[i] >= 2 && token.csi->sub[i][0] == 5) {
+                            // CSI 38:5:P m
+                            graphicRendition_.fgColorCode = token.csi->sub[i][1];
+                            graphicRendition_.fgGreen = 0;
+                            graphicRendition_.fgBlue = 0;
+                            graphicRendition_.fgColorMode = ColorModeNormal;
+                        } else if (token.csi->subCount[i] >= 4 && token.csi->sub[i][0] == 2) {
+                            // CSI 38:2:R:G:B m
                             // 24-bit color
-                            bgColorCode_ = token.csi->p[i + 2];
-                            bgGreen_ = token.csi->p[i + 3];
-                            bgBlue_ = token.csi->p[i + 4];
-                            bgColorMode_ = ColorMode24bit;
-                            i += 4;
+                            graphicRendition_.fgColorCode = token.csi->sub[i][1];
+                            graphicRendition_.fgGreen = token.csi->sub[i][2];
+                            graphicRendition_.fgBlue = token.csi->sub[i][3];
+                            graphicRendition_.fgColorMode = ColorMode24bit;
                         }
-                        break;
-                    default:
-                        // 8 color support
-                        if (n >= VT100CHARATTR_FG_BLACK &&
-                            n <= VT100CHARATTR_FG_WHITE) {
-                            fgColorCode_ = n - VT100CHARATTR_FG_BASE - COLORCODE_BLACK;
-                            fgGreen_ = 0;
-                            fgBlue_ = 0;
-                            fgColorMode_ = ColorModeNormal;
-                        } else if (n >= VT100CHARATTR_BG_BLACK &&
-                                   n <= VT100CHARATTR_BG_WHITE) {
-                            bgColorCode_ = n - VT100CHARATTR_BG_BASE - COLORCODE_BLACK;
-                            bgGreen_ = 0;
-                            bgBlue_ = 0;
-                            bgColorMode_ = ColorModeNormal;
+                    } else if (token.csi->count - i >= 3 && token.csi->p[i + 1] == 5) {
+                        // CSI 38;5;P m
+                        graphicRendition_.fgColorCode = token.csi->p[i + 2];
+                        graphicRendition_.fgGreen = 0;
+                        graphicRendition_.fgBlue = 0;
+                        graphicRendition_.fgColorMode = ColorModeNormal;
+                        i += 2;
+                    } else if (token.csi->count - i >= 5 && token.csi->p[i + 1] == 2) {
+                        // CSI 38;2;R;G;B m
+                        // 24-bit color support
+                        graphicRendition_.fgColorCode = token.csi->p[i + 2];
+                        graphicRendition_.fgGreen = token.csi->p[i + 3];
+                        graphicRendition_.fgBlue = token.csi->p[i + 4];
+                        graphicRendition_.fgColorMode = ColorMode24bit;
+                        i += 4;
+                    }
+                    break;
+                case VT100CHARATTR_BG_256:
+                    if (token.csi->subCount[i] > 0) {
+                        // Preferred syntax using colons to delimit subparameters
+                        if (token.csi->subCount[i] >= 2 && token.csi->sub[i][0] == 5) {
+                            // CSI 48:5:P m
+                            graphicRendition_.bgColorCode = token.csi->sub[i][1];
+                            graphicRendition_.bgGreen = 0;
+                            graphicRendition_.bgBlue = 0;
+                            graphicRendition_.bgColorMode = ColorModeNormal;
+                        } else if (token.csi->subCount[i] >= 4 && token.csi->sub[i][0] == 2) {
+                            // CSI 48:2:R:G:B m
+                            // 24-bit color
+                            graphicRendition_.bgColorCode = token.csi->sub[i][1];
+                            graphicRendition_.bgGreen = token.csi->sub[i][2];
+                            graphicRendition_.bgBlue = token.csi->sub[i][3];
+                            graphicRendition_.bgColorMode = ColorMode24bit;
                         }
-                        // 16 color support
-                        if (n >= VT100CHARATTR_FG_HI_BLACK &&
-                            n <= VT100CHARATTR_FG_HI_WHITE) {
-                            fgColorCode_ = n - VT100CHARATTR_FG_HI_BASE - COLORCODE_BLACK + 8;
-                            fgGreen_ = 0;
-                            fgBlue_ = 0;
-                            fgColorMode_ = ColorModeNormal;
-                        } else if (n >= VT100CHARATTR_BG_HI_BLACK &&
-                                   n <= VT100CHARATTR_BG_HI_WHITE) {
-                            bgColorCode_ = n - VT100CHARATTR_BG_HI_BASE - COLORCODE_BLACK + 8;
-                            bgGreen_ = 0;
-                            bgBlue_ = 0;
-                            bgColorMode_ = ColorModeNormal;
-                        }
-                }
+                    } else if (token.csi->count - i >= 3 && token.csi->p[i + 1] == 5) {
+                        // CSI 48;5;P m
+                        graphicRendition_.bgColorCode = token.csi->p[i + 2];
+                        graphicRendition_.bgGreen = 0;
+                        graphicRendition_.bgBlue = 0;
+                        graphicRendition_.bgColorMode = ColorModeNormal;
+                        i += 2;
+                    } else if (token.csi->count - i >= 5 && token.csi->p[i + 1] == 2) {
+                        // CSI 48;2;R;G;B m
+                        // 24-bit color
+                        graphicRendition_.bgColorCode = token.csi->p[i + 2];
+                        graphicRendition_.bgGreen = token.csi->p[i + 3];
+                        graphicRendition_.bgBlue = token.csi->p[i + 4];
+                        graphicRendition_.bgColorMode = ColorMode24bit;
+                        i += 4;
+                    }
+                    break;
+                default:
+                    // 8 color support
+                    if (n >= VT100CHARATTR_FG_BLACK &&
+                        n <= VT100CHARATTR_FG_WHITE) {
+                        graphicRendition_.fgColorCode = n - VT100CHARATTR_FG_BASE - COLORCODE_BLACK;
+                        graphicRendition_.fgGreen = 0;
+                        graphicRendition_.fgBlue = 0;
+                        graphicRendition_.fgColorMode = ColorModeNormal;
+                    } else if (n >= VT100CHARATTR_BG_BLACK &&
+                               n <= VT100CHARATTR_BG_WHITE) {
+                        graphicRendition_.bgColorCode = n - VT100CHARATTR_BG_BASE - COLORCODE_BLACK;
+                        graphicRendition_.bgGreen = 0;
+                        graphicRendition_.bgBlue = 0;
+                        graphicRendition_.bgColorMode = ColorModeNormal;
+                    }
+                    // 16 color support
+                    if (n >= VT100CHARATTR_FG_HI_BLACK &&
+                        n <= VT100CHARATTR_FG_HI_WHITE) {
+                        graphicRendition_.fgColorCode = n - VT100CHARATTR_FG_HI_BASE - COLORCODE_BLACK + 8;
+                        graphicRendition_.fgGreen = 0;
+                        graphicRendition_.fgBlue = 0;
+                        graphicRendition_.fgColorMode = ColorModeNormal;
+                    } else if (n >= VT100CHARATTR_BG_HI_BLACK &&
+                               n <= VT100CHARATTR_BG_HI_WHITE) {
+                        graphicRendition_.bgColorCode = n - VT100CHARATTR_BG_HI_BASE - COLORCODE_BLACK + 8;
+                        graphicRendition_.bgGreen = 0;
+                        graphicRendition_.bgBlue = 0;
+                        graphicRendition_.bgColorMode = ColorModeNormal;
+                    }
             }
         }
-    } else if (token->type == VT100CSI_DECSTR) {
-        [self resetSGR];
     }
 }
 
@@ -939,23 +818,6 @@ static const int kMaxScreenRows = 4096;
     int right = csi->p[index + 3];
     VT100GridCoordRange coordRange = VT100GridCoordRangeMake(left, top, right, bottom);
 
-    // If in origin mode, offset non-default coordinates by the origin of the scroll region.
-    if (self.originMode) {
-        VT100GridRect region = [delegate_ terminalScrollRegion];
-        if (coordRange.start.x >= 0) {
-            coordRange.start.x -= region.origin.x;
-        }
-        if (coordRange.start.y >= 0) {
-            coordRange.start.y -= region.origin.y;
-        }
-        if (coordRange.end.x >= 0) {
-            coordRange.end.x -= region.origin.x;
-        }
-        if (coordRange.end.y >= 0) {
-            coordRange.end.y -= region.origin.y;
-        }
-    }
-
     // Replace default values with the passed-in defaults.
     if (coordRange.start.x < 0) {
         coordRange.start.x = defaultRectangle.origin.x + 1;
@@ -968,6 +830,14 @@ static const int kMaxScreenRows = 4096;
     }
     if (coordRange.end.y < 0) {
         coordRange.end.y = defaultMax.y + 1;
+    }
+
+    if (self.originMode) {
+        VT100GridRect scrollRegion = [delegate_ terminalScrollRegion];
+        coordRange.start.x += scrollRegion.origin.x;
+        coordRange.start.y += scrollRegion.origin.y;
+        coordRange.end.x += scrollRegion.origin.x;
+        coordRange.end.y += scrollRegion.origin.y;
     }
 
     // Convert the coordRange to a 0-based rect (all coords are 1-based so far) and return it.
@@ -1000,6 +870,7 @@ static const int kMaxScreenRows = 4096;
         return;
     }
     if (![self rectangleIsValid:rect]) {
+        [delegate_ terminalSendReport:[self.output reportChecksum:0 withIdentifier:identifier]];
         return;
     }
     // TODO: Respect origin mode
@@ -1078,9 +949,161 @@ static const int kMaxScreenRows = 4096;
     return resultString;
 }
 
+// The main and alternate screens have different saved cursors. This returns the current one. In
+// tmux mode, only one is used to more closely approximate tmux's behavior.
+- (VT100SavedCursor *)savedCursor {
+    if ([delegate_ terminalInTmuxMode]) {
+        return &mainSavedCursor_;
+    }
+    VT100SavedCursor *savedCursor;
+    if ([delegate_ terminalIsShowingAltBuffer]) {
+        savedCursor = &altSavedCursor_;
+    } else {
+        savedCursor = &mainSavedCursor_;
+    }
+    return savedCursor;
+}
+
+- (void)saveCursor {
+    VT100SavedCursor *savedCursor = [self savedCursor];
+
+    savedCursor->position = VT100GridCoordMake([delegate_ terminalCursorX] - 1,
+                                               [delegate_ terminalCursorY] - 1);
+    savedCursor->charset = _charset;
+
+    for (int i = 0; i < NUM_CHARSETS; i++) {
+        savedCursor->lineDrawing[i] = [delegate_ terminalLineDrawingFlagForCharset:i];
+    }
+    savedCursor->graphicRendition = graphicRendition_;
+    savedCursor->origin = self.originMode;
+    savedCursor->wraparound = self.wraparoundMode;
+}
+
+- (void)resetSavedCursorPositions {
+    mainSavedCursor_.position = VT100GridCoordMake(0, 0);
+    altSavedCursor_.position = VT100GridCoordMake(0, 0);
+}
+
+- (void)clampSavedCursorToScreenSize:(VT100GridSize)newSize {
+    mainSavedCursor_.position = VT100GridCoordMake(MIN(newSize.width - 1, mainSavedCursor_.position.x),
+                                                   MIN(newSize.height - 1, mainSavedCursor_.position.y));
+    altSavedCursor_.position = VT100GridCoordMake(MIN(newSize.width - 1, altSavedCursor_.position.x),
+                                                  MIN(newSize.height - 1, altSavedCursor_.position.y));
+}
+
+- (void)setSavedCursorPosition:(VT100GridCoord)position {
+    VT100SavedCursor *savedCursor = [self savedCursor];
+    savedCursor->position = position;
+}
+
+- (void)restoreCursor {
+    VT100SavedCursor *savedCursor = [self savedCursor];
+    [delegate_ terminalSetCursorX:savedCursor->position.x + 1];
+    [delegate_ terminalSetCursorY:savedCursor->position.y + 1];
+    _charset = savedCursor->charset;
+    for (int i = 0; i < NUM_CHARSETS; i++) {
+        [delegate_ terminalSetCharset:i toLineDrawingMode:savedCursor->lineDrawing[i]];
+    }
+
+    graphicRendition_ = savedCursor->graphicRendition;
+
+    self.originMode = savedCursor->origin;
+    self.wraparoundMode = savedCursor->wraparound;
+}
+
+// These steps are derived from xterm's source.
+- (void)softReset {
+    // The steps here are derived from xterm's implementation. The order is different but not in
+    // a significant way.
+    int x = [delegate_ terminalCursorX];
+    int y = [delegate_ terminalCursorY];
+
+    // Show cursor
+    [delegate_ terminalSetCursorVisible:YES];
+
+    // Reset cursor shape to default
+    [delegate_ terminalSetCursorType:CURSOR_DEFAULT];
+
+    // Remove tb and lr margins
+    [delegate_ terminalSetScrollRegionTop:0
+                                   bottom:[delegate_ terminalHeight] - 1];
+    [delegate_ terminalSetLeftMargin:0 rightMargin:[delegate_ terminalWidth] - 1];
+
+
+    // Turn off origin mode
+    self.originMode = NO;
+
+    // Reset colors
+    graphicRendition_.fgColorCode = 0;
+    graphicRendition_.fgGreen = 0;
+    graphicRendition_.fgBlue = 0;
+    graphicRendition_.fgColorMode = 0;
+
+    graphicRendition_.bgColorCode = 0;
+    graphicRendition_.bgGreen = 0;
+    graphicRendition_.bgBlue = 0;
+    graphicRendition_.bgColorMode = 0;
+
+    // Reset character-sets to initial state
+    _charset = 0;
+    for (int i = 0; i < NUM_CHARSETS; i++) {
+        [delegate_ terminalSetCharset:i toLineDrawingMode:NO];
+    }
+
+    // (Not supported: Reset DECSCA)
+    // Reset DECCKM
+    self.cursorMode = NO;
+
+    // (Not supported: Reset KAM)
+
+    // Reset DECKPAM
+    self.keypadMode = NO;
+
+    // Set WRAPROUND to initial value
+    self.wraparoundMode = YES;
+
+    // Set REVERSEWRAP to initial value
+    self.reverseWraparoundMode = NO;
+
+    // Reset INSERT
+    self.insertMode = NO;
+
+    // Reset INVERSE
+    graphicRendition_.reversed = NO;
+
+    // Reset BOLD
+    graphicRendition_.bold = NO;
+
+    // Reset BLINK
+    graphicRendition_.blink = NO;
+
+    // Reset UNDERLINE
+    graphicRendition_.under = NO;
+
+    // (Not supported: Reset INVISIBLE)
+
+    // Save screen flags
+    // Save fg, bg colors
+    // Save charset flags
+    // Save current charset
+    [self saveCursor];
+
+    // Reset saved cursor position to 1,1.
+    VT100SavedCursor *savedCursor = [self savedCursor];
+    savedCursor->position = VT100GridCoordMake(0, 0);
+
+    [delegate_ terminalSetCursorX:x];
+    [delegate_ terminalSetCursorY:y];
+}
+
+- (VT100GridCoord)savedCursorPosition {
+    VT100SavedCursor *savedCursor = [self savedCursor];
+    return savedCursor->position;
+}
+
 - (void)executeToken:(VT100Token *)token {
     // Handle tmux stuff, which completely bypasses all other normal execution steps.
-    if (token->type == DCS_TMUX) {
+    if (token->type == DCS_TMUX_HOOK) {
         [delegate_ terminalStartTmuxMode];
         return;
     } else if (token->type == TMUX_EXIT || token->type == TMUX_LINE) {
@@ -1134,13 +1157,9 @@ static const int kMaxScreenRows = 4096;
             break;
     }
 
-    // Update internal state.
-    [self executeModeUpdates:token];
-    [self executeSGR:token];
-
     // Farm out work to the delegate.
     switch (token->type) {
-            // our special code
+        // our special code
         case VT100_STRING:
             [delegate_ terminalAppendString:token.string];
             break;
@@ -1174,18 +1193,24 @@ static const int kMaxScreenRows = 4096;
         case VT100CC_CR:
             [delegate_ terminalCarriageReturn];
             break;
-        case VT100CC_SO:
         case VT100CC_SI:
+            _charset = 0;
+            break;
+        case VT100CC_SO:
+            _charset = 1;
+            break;
         case VT100CC_DC1:
+            xon_ = YES;
+            break;
         case VT100CC_DC3:
+            xon_ = NO;
+            break;
         case VT100CC_CAN:
         case VT100CC_SUB:
-            break;
         case VT100CC_DEL:
-            [delegate_ terminalDeleteCharactersAtCursor:1];
             break;
 
-            // VT100 CSI
+        // VT100 CSI
         case VT100CSI_CPR:
             break;
         case VT100CSI_CUB:
@@ -1229,15 +1254,17 @@ static const int kMaxScreenRows = 4096;
         case VT100CSI_DECDHL:
         case VT100CSI_DECDWL:
         case VT100CSI_DECID:
-        case VT100CSI_DECKPAM:
+            break;
         case VT100CSI_DECKPNM:
+            self.keypadMode = NO;
+            break;
+        case VT100CSI_DECKPAM:
+            self.keypadMode = YES;
             break;
 
         case ANSICSI_RCP:
         case VT100CSI_DECRC:
-            [self restoreTextAttributes];
-            [delegate_ terminalRestoreCursor];
-            [delegate_ terminalRestoreCharsetFlags];
+            [self restoreCursor];
             break;
 
         case ANSICSI_SCP:
@@ -1246,9 +1273,7 @@ static const int kMaxScreenRows = 4096;
             // case, so if we get here it's definitely the same as DECSC.
             // Fall through.
         case VT100CSI_DECSC:
-            [self saveTextAttributes];
-            [delegate_ terminalSaveCursor];
-            [delegate_ terminalSaveCharsetFlags];
+            [self saveCursor];
             break;
 
         case VT100CSI_DECSTBM:
@@ -1330,10 +1355,21 @@ static const int kMaxScreenRows = 4096;
         case ANSI_RIS:
             [self resetPreservingPrompt:NO];
             break;
-        case VT100CSI_RM:
+        case VT100CSI_SM:
+        case VT100CSI_RM: {
+            int mode = (token->type == VT100CSI_SM);
+
+            for (int i = 0; i < token.csi->count; i++) {
+                switch (token.csi->p[i]) {
+                    case 4:
+                        self.insertMode = mode;
+                        break;
+                }
+            }
             break;
+        }
         case VT100CSI_DECSTR:
-            [delegate_ terminalSoftReset];
+            [self softReset];
             break;
         case VT100CSI_DECSCUSR:
             switch (token.csi->p[0]) {
@@ -1442,8 +1478,9 @@ static const int kMaxScreenRows = 4096;
             break;
 
         case VT100CSI_SGR:
-        case VT100CSI_SM:
+            [self executeSGR:token];
             break;
+
         case VT100CSI_TBC:
             switch (token.csi->p[0]) {
                 case 3:
@@ -1457,10 +1494,7 @@ static const int kMaxScreenRows = 4096;
 
         case VT100CSI_DECSET:
         case VT100CSI_DECRST:
-            if (token.csi->p[0] == 3 && // DECCOLM
-                self.allowColumnMode) {
-                [delegate_ terminalSetWidth:(self.columnMode ? 132 : 80)];
-            }
+            [self executeDecSetReset:token];
             break;
 
             // ANSI CSI
@@ -1681,10 +1715,39 @@ static const int kMaxScreenRows = 4096;
         case VT100CC_STX:
         case VT100CC_SYN:
         case VT100CC_US:
-        case VT100CSI_RESET_MODIFIERS:
         case VT100CSI_SCS:
-        case VT100CSI_SET_MODIFIERS:
             break;
+
+        case VT100CSI_RESET_MODIFIERS:
+            if (token.csi->count == 0) {
+                sendModifiers_[2] = -1;
+            } else {
+                int resource = token.csi->p[0];
+                if (resource >= 0 && resource <= NUM_MODIFIABLE_RESOURCES) {
+                    sendModifiers_[resource] = -1;
+                }
+            }
+            break;
+
+        case VT100CSI_SET_MODIFIERS: {
+            if (token.csi->count == 0) {
+                for (int j = 0; j < NUM_MODIFIABLE_RESOURCES; j++) {
+                    sendModifiers_[j] = 0;
+                }
+            } else {
+                int resource = token.csi->p[0];
+                int value;
+                if (token.csi->count == 1) {
+                    value = 0;
+                } else {
+                    value = token.csi->p[1];
+                }
+                if (resource >= 0 && resource < NUM_MODIFIABLE_RESOURCES && value >= 0) {
+                    sendModifiers_[resource] = value;
+                }
+            }
+            break;
+        }
 
         case XTERMCC_PROPRIETARY_ETERM_EXT:
             [self executeXtermProprietaryExtermExtension:token];
@@ -1698,9 +1761,8 @@ static const int kMaxScreenRows = 4096;
             [self executeXtermSetRgb:token];
             break;
 
-        case DCS_BEGIN_TMUX_CODE_WRAP:
-        case DCS_END_TMUX_CODE_WRAP:
-            // These are no-ops for us. They are expected to occur in tmux integration.
+        case DCS_TMUX_CODE_WRAP:
+            // This is a no-op and it shouldn't happen.
             break;
 
         case DCS_REQUEST_TERMCAP_TERMINFO: {
@@ -1814,6 +1876,9 @@ static const int kMaxScreenRows = 4096;
 }
 
 - (void)executeXtermSetKvp:(VT100Token *)token {
+    if (!token.string) {
+        return;
+    }
     NSArray *kvp = [self keyValuePairInToken:token];
     NSString *key = kvp[0];
     NSString *value = kvp[1];

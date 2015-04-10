@@ -124,7 +124,6 @@ class DECSETTests(object):
 
     AssertScreenCharsInRectEqual(Rect(1, 1, 1, 1), [ "X" ])
 
-  @knownBug(terminal="iTerm2", reason="DECRQCRA does not respect origin mode in iTerm2")
   def test_DECSET_DECOM_DECRQCRA(self):
     """DECRQCRA should be relative to the origin in origin mode. DECRQCRA
     doesn't have its own test so this is tested here instead."""
@@ -195,8 +194,6 @@ class DECSETTests(object):
 
     AssertScreenCharsInRectEqual(Rect(5, 8, 9, 9), [ NUL * 3 + "ab", "cdef" + NUL ])
 
-  @knownBug(terminal="iTerm2",
-            reason="Upon reaching the right margin, iTerm2 incorrectly moves the cursor to the right edge of the screen.")
   def test_DECSET_DECAWM_OffRespectsLeftRightMargin(self):
     """Auto-wrap mode off respects left-right margins."""
     esccmd.DECSET(esccmd.DECLRMM)
@@ -260,7 +257,6 @@ class DECSETTests(object):
       escio.Write("x")
     escio.Write(TAB)
 
-  @knownBug(terminal="iTerm2", reason="iTerm2 wraps tabs")
   def test_DECSET_DECAWM_TabDoesNotWrapAround(self):
     """In auto-wrap mode, tabs to not wrap to the next line."""
     esccmd.DECSET(esccmd.DECAWM)
@@ -269,8 +265,27 @@ class DECSETTests(object):
       escio.Write(TAB)
     AssertEQ(GetCursorPosition().x(), size.width())
     AssertEQ(GetCursorPosition().y(), 1)
+    escio.Write("X")
 
-  @knownBug(terminal="iTerm2", reason="iTerm2 doesn't implement DECSET 41 (MoreFix).")
+  def test_DECSET_DECAWM_NoLineWrapOnTabWithLeftRightMargin(self):
+    esccmd.DECSET(esccmd.DECAWM)
+    esccmd.XTERM_WINOPS(esccmd.WINOP_RESIZE_CHARS,
+                            24,
+                            80)
+    esccmd.DECSET(esccmd.DECLRMM)
+    esccmd.DECSLRM(10, 20)
+
+    # Move to origin and tab thrice. Should stop at right margin.
+    AssertEQ(GetCursorPosition(), Point(1, 1))
+    escio.Write(TAB)
+    AssertEQ(GetCursorPosition(), Point(9, 1))
+    escio.Write(TAB)
+    AssertEQ(GetCursorPosition(), Point(17, 1))
+    escio.Write(TAB)
+    AssertEQ(GetCursorPosition(), Point(20, 1))
+    escio.Write(TAB)
+    AssertEQ(GetCursorPosition(), Point(20, 1))
+
   def test_DECSET_MoreFix(self):
     """xterm supports DECSET 41 to enable a fix for a bug in curses where it
     would draw to the end of a row and then insert a tab. When 41 is set, the
@@ -291,8 +306,6 @@ class DECSETTests(object):
     escio.Write("2")
     AssertScreenCharsInRectEqual(Rect(1, 5, 1, 5), [ "2" ])
 
-  @knownBug(terminal="iTerm2",
-            reason="iTerm2 only reverse wraps-around if there's a soft newline at the preceding line.")
   def test_DECSET_ReverseWraparound_BS(self):
     """xerm supports DECSET 45 to toggle 'reverse wraparound'. Both DECAWM and
     45 must be set."""
@@ -303,7 +316,6 @@ class DECSETTests(object):
     escio.Write(BS)
     AssertEQ(GetCursorPosition().x(), GetScreenSize().width())
 
-  @knownBug(terminal="iTerm2", reason="iTerm2 moves the cursor back an extra space.")
   def test_DECSET_ReverseWraparoundLastCol_BS(self):
     """If the cursor is in the last column and a character was just output and
     reverse-wraparound is on then backspace by 1 has no effect."""
@@ -327,28 +339,23 @@ class DECSETTests(object):
     esccmd.CUB(4)
     AssertEQ(GetCursorPosition().x(), size.width() - 1)
 
-  @knownBug(terminal="iTerm2",
-            reason="iTerm2 doesn't implement DECRESET ReverseWraparound.")
   def test_DECSET_ResetReverseWraparoundDisablesIt(self):
     """DECRESET of reverse wraparound prevents it from happening."""
-    # iTerm2 turns reverse wraparound on by default, while xterm does not.
+    # Note that iTerm disregards the value of ReverseWraparound when there's a
+    # soft EOL on the preceding line and always wraps.
     esccmd.DECRESET(esccmd.ReverseWraparound)
     esccmd.DECSET(esccmd.DECAWM)
-    esccmd.CUP(Point(GetScreenSize().width() - 1, 1))
-    escio.Write("abc")
-    escio.Write(BS * 5)
+    esccmd.CUP(Point(1, 2))
+    escio.Write(BS)
     AssertEQ(GetCursorPosition().x(), 1)
 
-  @knownBug(terminal="iTerm2",
-             reason="iTerm2 does not require DECAWM for reverse wrap.")
   def test_DECSET_ReverseWraparound_RequiresDECAWM(self):
     """Reverse wraparound only works if DECAWM is set."""
     # iTerm2 turns reverse wraparound on by default, while xterm does not.
-    esccmd.CUP(Point(GetScreenSize().width() - 1, 1))
-    escio.Write("abc")
+    esccmd.CUP(Point(1, 2))
     esccmd.DECSET(esccmd.ReverseWraparound)
     esccmd.DECRESET(esccmd.DECAWM)
-    escio.Write(BS * 5)
+    escio.Write(BS)
     AssertEQ(GetCursorPosition().x(), 1)
 
   def doAltBuftest(self, code, altGetsClearedBeforeToMain, cursorSaved):
@@ -441,19 +448,21 @@ class DECSETTests(object):
     escio.Write("ABCDEFGH")
     AssertScreenCharsInRectEqual(Rect(1, 1, 8, 1), [ "ABCDEFGH" ])
 
-  @knownBug(terminal="iTerm2",
-            reason="iTerm2 fails to reset DECLRMM (it just sets the margins to the screen edges)")
-  def test_DECSET_DECLRMM_ResetByDECSTR(self):
-    """DECSTR should turn off DECLRMM."""
+  def test_DECSET_DECLRMM_MarginsResetByDECSTR(self):
+    esccmd.DECSLRM(2, 4)
+    esccmd.DECSTR()
+    esccmd.DECSET(esccmd.DECLRMM)
+    esccmd.CUP(Point(3, 3))
+    escio.Write("abc")
+    AssertEQ(GetCursorPosition().x(), 6)
+
+  def test_DECSET_DECLRMM_ModeNotResetByDECSTR(self):
     esccmd.DECSET(esccmd.DECLRMM)
     esccmd.DECSTR()
-    esccmd.DECSET(esccmd.DECAWM)
-    esccmd.DECSET(esccmd.ReverseWraparound)
-    esccmd.CUP(Point(GetScreenSize().width() - 1, 1))
+    esccmd.DECSLRM(2, 4)
+    esccmd.CUP(Point(3, 3))
     escio.Write("abc")
-    # Reverse wraparound is disabled (at least in iTerm2) when a scroll region is present.
-    escio.Write(BS * 3)
-    AssertEQ(GetCursorPosition().y(), 1)
+    AssertEQ(GetCursorPosition().x(), 3)
 
   @vtLevel(5)
   @knownBug(terminal="iTerm2", reason="DECNCSM not implemented")

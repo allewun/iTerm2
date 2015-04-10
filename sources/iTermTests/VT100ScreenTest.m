@@ -729,9 +729,6 @@
 - (void)screenHandleTmuxInput:(VT100Token *)token {
 }
 
-- (void)screenModifiersDidChangeTo:(NSArray *)modifiers {
-}
-
 - (void)screenShowBellIndicator {
 }
 
@@ -828,6 +825,10 @@
 }
 
 - (void)screenPromptDidStartAtLine:(int)line {
+}
+
+- (BOOL)screenInTmuxMode {
+    return NO;
 }
 
 #pragma mark - iTermSelectionDelegate
@@ -971,7 +972,7 @@
             @"....."]);
     assert(screen.cursorX == 1);
     assert(screen.cursorY == 4);
-    [screen terminalShowPrimaryBufferRestoringCursor:YES];
+    [screen terminalShowPrimaryBuffer];
     assert([[screen compactLineDump] isEqualToString:
             @"abcde\n"
             @"fgh..\n"
@@ -991,7 +992,7 @@
             @"...."]);
     assert(screen.cursorX == 1);
     assert(screen.cursorY == 4);
-    [screen terminalShowPrimaryBufferRestoringCursor:YES];
+    [screen terminalShowPrimaryBuffer];
     assert([[screen compactLineDump] isEqualToString:
             @"abcd\n"
             @"efgh\n"
@@ -1011,7 +1012,7 @@
             @"........."]);
     assert(screen.cursorX == 1);
     assert(screen.cursorY == 3);
-    [screen terminalShowPrimaryBufferRestoringCursor:YES];
+    [screen terminalShowPrimaryBuffer];
     assert([[screen compactLineDump] isEqualToString:
             @"abcdefgh.\n"
             @"ijkl.....\n"
@@ -1032,7 +1033,7 @@
             @"....."]);
     assert(screen.cursorX == 1);
     assert(screen.cursorY == 4);
-    [screen terminalShowPrimaryBufferRestoringCursor:YES];
+    [screen terminalShowPrimaryBuffer];
     assert([[screen compactLineDump] isEqualToString:
             @"abcde\n"
             @"fgh..\n"
@@ -1052,7 +1053,7 @@
             @"......"]);
     assert(screen.cursorX == 1);
     assert(screen.cursorY == 4);
-    [screen terminalShowPrimaryBufferRestoringCursor:YES];
+    [screen terminalShowPrimaryBuffer];
     assert([[screen compactLineDump] isEqualToString:
             @"ijkl..\n"
             @"mnopqr\n"
@@ -1072,7 +1073,7 @@
             @"..."]);
     assert(screen.cursorX == 1);
     assert(screen.cursorY == 3);
-    [screen terminalShowPrimaryBufferRestoringCursor:YES];
+    [screen terminalShowPrimaryBuffer];
     assert([[screen compactLineDump] isEqualToString:
             @"ijk\n"
             @"l..\n"
@@ -1280,7 +1281,7 @@
             @"......\n"
             @"......"]);
     assert([[self selectedStringInScreen:screen] isEqualToString:@"abcdefgh\nMNOPQRST\nUVWXYZ"]);
-    [screen terminalShowPrimaryBufferRestoringCursor:YES];
+    [screen terminalShowPrimaryBuffer];
     assert([[screen compactLineDump] isEqualToString:
             @"ijkl..\n"
             @"mnopqr\n"
@@ -1329,7 +1330,7 @@
     s = ScreenCharArrayToStringDebug([screen getLineAtIndex:0],
                                      [screen width]);
     assert([s isEqualToString:@"gh"]);
-    [screen terminalShowPrimaryBufferRestoringCursor:YES];
+    [screen terminalShowPrimaryBuffer];
     assert([[screen compactLineDump] isEqualToString:
             @"ijk\n"
             @"l..\n"
@@ -1403,7 +1404,7 @@
             @"......\n"
             @"......"]);
     assert([[self selectedStringInScreen:screen] isEqualToString:@"abcdef"]);
-    [screen terminalShowPrimaryBufferRestoringCursor:YES];
+    [screen terminalShowPrimaryBuffer];
     assert([[screen compactLineDumpWithHistory] isEqualToString:
             @"abcdef\n"
             @"gh....\n"
@@ -1506,7 +1507,7 @@
             @"......\n"
             @"......\n"
             @"......"]);
-    [screen terminalShowPrimaryBufferRestoringCursor:YES];
+    [screen terminalShowPrimaryBuffer];
     assert([[screen compactLineDump] isEqualToString:
             @"gh....\n"
             @"ijklmn\n"
@@ -1648,8 +1649,7 @@
     [screen terminalSetScrollRegionTop:1 bottom:2];
     [screen terminalSetUseColumnScrollRegion:YES];
     [screen terminalSetLeftMargin:1 rightMargin:2];
-    [screen terminalSaveCursor];
-    [screen terminalSaveCharsetFlags];
+    [terminal_ setSavedCursorPosition:screen.currentGrid.cursor];
     [self appendLines:@[@"abcdefgh", @"ijkl", @"mnopqrstuvwxyz"] toScreen:screen];
     [screen clearBuffer];
     assert(updates_ == 1);
@@ -1660,8 +1660,8 @@
             @"....."]);
     assert(VT100GridRectEquals([[screen currentGrid] scrollRegionRect],
                                VT100GridRectMake(0, 0, 5, 4)));
-    assert(screen.savedCursor.x == 0);
-    assert(screen.savedCursor.y == 0);
+    assert(terminal_.savedCursorPosition.x == 0);
+    assert(terminal_.savedCursorPosition.y == 0);
 
     // Cursor on last nonempty line
     screen = [self screenWithWidth:5 height:4];
@@ -2005,8 +2005,7 @@
     
     assert(screen.cursorX == 5);
     assert(screen.cursorY == 6);
-    [screen terminalRestoreCursor];
-    [screen terminalRestoreCharsetFlags];
+    [terminal_ restoreCursor];
     assert(screen.cursorX == 3);
     assert(screen.cursorY == 4);
     assert([[screen currentGrid] topMargin] == 6);
@@ -2871,6 +2870,7 @@
             return actual;
         }
         [actual addObject:@(screen.cursorX - 1)];
+        lastX = screen.cursorX;
     }
 }
 
@@ -2878,28 +2878,28 @@
     VT100Screen *screen = [self screenWithWidth:20 height:3];
     
     // Test default tab stops
-    NSArray *expected = @[ @(8), @(16)];
+    NSArray *expected = @[ @8, @16, @19];
     assert([expected isEqualToArray:[self tabStopsInScreen:screen]]);
     
     // Add a tab stop
     [screen terminalMoveCursorToX:10 y:1];
     [screen terminalSetTabStopAtCursor];
-    expected = @[ @(8), @(9), @(16)];
+    expected = @[ @8, @9, @16, @19];
     assert([expected isEqualToArray:[self tabStopsInScreen:screen]]);
     
     // Remove a tab stop
     [screen terminalMoveCursorToX:9 y:1];
     [screen terminalRemoveTabStopAtCursor];
-    expected = @[ @(9), @(16)];
+    expected = @[ @9, @16, @19];
     assert([expected isEqualToArray:[self tabStopsInScreen:screen]]);
     
-    // Appending a tab should respect vsplits. (currently not implemented)
+    // Appending a tab should respect vsplits.
     screen = [self screenWithWidth:20 height:3];
     [screen terminalMoveCursorToX:1 y:1];
     [screen terminalSetUseColumnScrollRegion:YES];
     [screen terminalSetLeftMargin:0 rightMargin:7];
     [screen terminalAppendTabAtCursor];
-    ITERM_TEST_KNOWN_BUG(screen.cursorX == 1, screen.cursorX == 9);
+    assert(screen.cursorX == 8);
     
     // Tabbing over text doesn't change it
     screen = [self screenWithWidth:20 height:3];
@@ -2928,16 +2928,14 @@
                                          screen.width) isEqualToString:@"x"]);
     assert(screen.cursorX == 9);
     
-    // Wrapping around to the next line converts eol_hard to eol_soft.
+    // No wrap-around
     screen = [self screenWithWidth:20 height:3];
     [screen terminalAppendTabAtCursor];  // 9
     [screen terminalAppendTabAtCursor];  // 15
-    [screen terminalAppendTabAtCursor];  // (newline) 1
-    assert(screen.cursorX == 1);
-    assert(screen.cursorY == 2);
-    line = [screen getLineAtScreenIndex:0];
-    assert(line[screen.width].code == EOL_SOFT);
-    
+    [screen terminalAppendTabAtCursor];  // 19
+    assert(screen.cursorX == 20);
+    assert(screen.cursorY == 1);
+
     // Test backtab (it's simple, no wraparound)
     screen = [self screenWithWidth:20 height:3];
     [screen terminalMoveCursorToX:1 y:2];
@@ -2991,15 +2989,13 @@
     [screen terminalMoveCursorToX:4 y:5];
     [screen terminalSetCharset:1 toLineDrawingMode:YES];
     [screen terminalSetCharset:3 toLineDrawingMode:YES];
-    [screen terminalSaveCursor];
-    [screen terminalSaveCharsetFlags];
+    [terminal_ saveCursor];
     [screen terminalMoveCursorToX:1 y:1];
     [screen terminalSetCharset:1 toLineDrawingMode:NO];
     [screen terminalSetCharset:3 toLineDrawingMode:NO];
     assert([screen allCharacterSetPropertiesHaveDefaultValues]);
 
-    [screen terminalRestoreCursor];
-    [screen terminalRestoreCharsetFlags];
+    [terminal_ restoreCursor];
 
     assert(screen.cursorX == 4);
     assert(screen.cursorY == 5);
@@ -3016,13 +3012,15 @@
         [screen terminalSetCharset:i toLineDrawingMode:NO];
     }
     [screen terminalMoveCursorToX:5 y:5];
-    [screen terminalRestoreCursor];
-    [screen terminalRestoreCharsetFlags];
+    [terminal_ restoreCursor];
 
     assert(screen.cursorX == 1);
     assert(screen.cursorY == 1);
+    assert(![screen allCharacterSetPropertiesHaveDefaultValues]);
+    [screen terminalSetCharset:1 toLineDrawingMode:NO];
+    assert(![screen allCharacterSetPropertiesHaveDefaultValues]);
+    [screen terminalSetCharset:3 toLineDrawingMode:NO];
     assert([screen allCharacterSetPropertiesHaveDefaultValues]);
-
 }
 
 - (void)testSetTopBottomScrollRegion {
@@ -3287,8 +3285,8 @@
     
     // Tab stops get reset
     screen = [self screenWithWidth:20 height:4];
-    NSArray *defaultTabstops = @[ @(8), @(16) ];
-    NSArray *augmentedTabstops = @[ @(3), @(8), @(16) ];
+    NSArray *defaultTabstops = @[ @8, @16, @19 ];
+    NSArray *augmentedTabstops = @[ @3, @8, @16, @19 ];
     assert([[self tabStopsInScreen:screen] isEqualToArray:defaultTabstops]);
 
     [screen terminalMoveCursorToX:4 y:1];
@@ -3300,16 +3298,11 @@
 
     // Saved cursor gets reset to origin
     screen = [self screenWithWidth:10 height:4];
-    [screen terminalMoveCursorToX:2 y:2];
-    [screen terminalSaveCursor];
-    [screen terminalSaveCharsetFlags];
+    [terminal_ saveCursor];
 
     [screen terminalResetPreservingPrompt:YES];
-    [screen terminalRestoreCursor];
-    [screen terminalRestoreCharsetFlags];
 
-    assert(screen.cursorX == 1);
-    assert(screen.cursorY == 1);
+    [terminal_ restoreCursor];
 
     // Charset flags get reset
     screen = [self screenWithWidth:10 height:4];
@@ -3320,20 +3313,18 @@
     [screen terminalResetPreservingPrompt:YES];
     assert([screen allCharacterSetPropertiesHaveDefaultValues]);
     
-    // Saved charset flags get reset
+    // Saved charset flags get restored, not reset blindly
     screen = [self screenWithWidth:10 height:4];
     [screen terminalSetCharset:0 toLineDrawingMode:YES];
     [screen terminalSetCharset:1 toLineDrawingMode:YES];
     [screen terminalSetCharset:2 toLineDrawingMode:YES];
     [screen terminalSetCharset:3 toLineDrawingMode:YES];
-    [screen terminalSaveCursor];
-    [screen terminalSaveCharsetFlags];
+    [terminal_ saveCursor];
 
     [screen terminalResetPreservingPrompt:YES];
-    [screen terminalRestoreCursor];
-    [screen terminalRestoreCharsetFlags];
+    [terminal_ restoreCursor];
 
-    assert([screen allCharacterSetPropertiesHaveDefaultValues]);
+    assert(![screen allCharacterSetPropertiesHaveDefaultValues]);
 
     // Cursor is made visible
     screen = [self screenWithWidth:10 height:4];
@@ -3342,40 +3333,6 @@
     assert(!cursorVisible_);
     [screen terminalResetPreservingPrompt:YES];
     assert(cursorVisible_);
-}
-
-- (void)testTerminalSoftReset {
-    // I really don't think this is the same as what xterm does.
-    // TODO Go through xterm's code and figure out what's supposed to happen.
-    // Save cursor and charset flags
-    // Reset scroll region
-    // restore cursor and charset flags
-    VT100Screen *screen = [self screenWithWidth:10 height:4];
-    [screen terminalSetScrollRegionTop:1 bottom:2];
-    [screen terminalSetUseColumnScrollRegion:YES];
-    [screen terminalSetLeftMargin:2 rightMargin:5];
-    [screen terminalMoveCursorToX:2 y:3];
-    [screen terminalSetCharset:1 toLineDrawingMode:YES];
-    [screen terminalSoftReset];
-    
-    assert([screen currentGrid].topMargin == 0);
-    assert([screen currentGrid].bottomMargin == 3);
-    assert([screen currentGrid].leftMargin == 0);
-    assert([screen currentGrid].rightMargin == 9);
-    assert(screen.cursorX == 2);
-    assert(screen.cursorY == 3);
-    assert(![screen allCharacterSetPropertiesHaveDefaultValues]);
-    [screen terminalSetCharset:1 toLineDrawingMode:NO];
-    assert([screen allCharacterSetPropertiesHaveDefaultValues]);
-    
-    [screen terminalRestoreCursor];
-    [screen terminalRestoreCharsetFlags];
-
-    assert(screen.cursorX == 2);
-    assert(screen.cursorY == 3);
-    assert(![screen allCharacterSetPropertiesHaveDefaultValues]);
-    [screen terminalSetCharset:1 toLineDrawingMode:NO];
-    assert([screen allCharacterSetPropertiesHaveDefaultValues]);
 }
 
 - (void)testSetWidth {
@@ -3926,7 +3883,7 @@
   [screen addNote:note inRange:VT100GridCoordRangeMake(0, 1, 2, 1)];  // fg
   [screen terminalShowAltBuffer];
   [screen resizeWidth:4 height:4];
-  [screen terminalShowPrimaryBufferRestoringCursor:YES];
+  [screen terminalShowPrimaryBuffer];
   assert([[screen compactLineDump] isEqualToString:
           @"abcd\n"
           @"efgh\n"
@@ -3991,7 +3948,7 @@
   [screen addNote:note inRange:VT100GridCoordRangeMake(0, 2, 2, 2)];  // ij
   [screen terminalShowAltBuffer];
   [screen resizeWidth:4 height:4];
-  [screen terminalShowPrimaryBufferRestoringCursor:YES];
+  [screen terminalShowPrimaryBuffer];
   assert([[screen compactLineDumpWithHistory] isEqualToString:
           @"abcd\n"  // history
           @"efgh\n"  // history
@@ -4023,7 +3980,7 @@
   [screen addNote:note inRange:VT100GridCoordRangeMake(0, 2, 2, 2)];  // ij
   [screen terminalShowAltBuffer];
   [screen resizeWidth:3 height:4];
-  [screen terminalShowPrimaryBufferRestoringCursor:YES];
+  [screen terminalShowPrimaryBuffer];
   assert([[screen compactLineDumpWithHistory] isEqualToString:
           @"abc\n"
           @"def\n"
@@ -4058,7 +4015,7 @@
   [screen addNote:note inRange:VT100GridCoordRangeMake(0, 2, 5, 3)];  // ijkl\nhello
   [screen terminalShowAltBuffer];
   [screen resizeWidth:3 height:4];
-  [screen terminalShowPrimaryBufferRestoringCursor:YES];
+  [screen terminalShowPrimaryBuffer];
   assert([[screen compactLineDumpWithHistory] isEqualToString:
           @"abc\n"
           @"def\n"
@@ -4092,7 +4049,7 @@
   PTYNoteViewController *note = [[[PTYNoteViewController alloc] init] autorelease];
   [screen addNote:note inRange:VT100GridCoordRangeMake(0, 1, 5, 3)];  // fgh\nijkl\nhello
   [screen terminalShowAltBuffer];
-  [screen terminalShowPrimaryBufferRestoringCursor:YES];
+  [screen terminalShowPrimaryBuffer];
 
   NSArray *notes = [screen notesInRange:VT100GridCoordRangeMake(0, 0, 8, 3)];
   assert(notes.count == 1);

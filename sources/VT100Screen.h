@@ -32,12 +32,8 @@ extern int kVT100ScreenMinRows;
     VT100Terminal *terminal_;
     id<VT100ScreenDelegate> delegate_;  // PTYSession implements this
 
-    // Saved cursor position.
-    VT100GridCoord savedCursor_;
-
     // BOOLs indicating, for each of the characters sets, which ones are in line-drawing mode.
     BOOL charsetUsesLineDrawingMode_[4];
-    BOOL savedCharsetUsesLineDrawingMode_[4];
     BOOL audibleBell_;
     BOOL showBellIndicator_;
     BOOL flashBell_;
@@ -118,7 +114,6 @@ extern int kVT100ScreenMinRows;
 @property(nonatomic, assign) BOOL useColumnScrollRegion;
 @property(nonatomic, assign) BOOL saveToScrollbackInAlternateScreen;
 @property(nonatomic, retain) DVR *dvr;
-@property(nonatomic, readonly) VT100GridCoord savedCursor;
 @property(nonatomic, assign) BOOL trackCursorLineMovement;
 @property(nonatomic, assign) BOOL appendToScrollbackWithStatusBar;
 @property(nonatomic, readonly) VT100GridAbsCoordRange lastCommandOutputRange;
@@ -193,8 +188,6 @@ extern int kVT100ScreenMinRows;
 
 // This is provided for testing only.
 - (VT100Grid *)currentGrid;
-
-- (void)resetCharset;
 
 // Called when a bell is to be run. Applies rate limiting and kicks off the bell indicators
 // (notifications, flashing lights, sounds) per user preference.

@@ -70,7 +70,6 @@ static NSString *const kInlineFileBase64String = @"base64 string";  // NSMutable
 @synthesize saveToScrollbackInAlternateScreen = saveToScrollbackInAlternateScreen_;
 @synthesize dvr = dvr_;
 @synthesize delegate = delegate_;
-@synthesize savedCursor = savedCursor_;
 
 - (id)initWithTerminal:(VT100Terminal *)terminal
 {
@@ -95,7 +94,6 @@ static NSString *const kInlineFileBase64String = @"base64 string";  // NSMutable
 
         for (int i = 0; i < NUM_CHARSETS; i++) {
             charsetUsesLineDrawingMode_[i] = NO;
-            savedCharsetUsesLineDrawingMode_[i] = NO;
         }
 
         findContext_ = [[FindContext alloc] init];
@@ -147,8 +145,7 @@ static NSString *const kInlineFileBase64String = @"base64 string";  // NSMutable
     _insert = [terminal_ insertMode];
 }
 
-- (void)destructivelySetScreenWidth:(int)width height:(int)height
-{
+- (void)destructivelySetScreenWidth:(int)width height:(int)height {
     width = MAX(width, kVT100ScreenMinColumns);
     height = MAX(height, kVT100ScreenMinRows);
 
@@ -156,9 +153,9 @@ static NSString *const kInlineFileBase64String = @"base64 string";  // NSMutable
     altGrid_.size = VT100GridSizeMake(width, height);
     primaryGrid_.cursor = VT100GridCoordMake(0, 0);
     altGrid_.cursor = VT100GridCoordMake(0, 0);
-    savedCursor_ = VT100GridCoordMake(0, 0);
     [primaryGrid_ resetScrollRegions];
     [altGrid_ resetScrollRegions];
+    [terminal_ resetSavedCursorPositions];
 
     findContext_.substring = nil;
 
@@ -669,8 +666,7 @@ static NSString *const kInlineFileBase64String = @"base64 string";  // NSMutable
                             maxLinesToRestore:[altScreenLineBuffer numLinesWithWidth:currentGrid_.size.width]];
     }
 
-    savedCursor_.x = MIN(new_width - 1, savedCursor_.x);
-    savedCursor_.y = MIN(new_height - 1, savedCursor_.y);
+    [terminal_ clampSavedCursorToScreenSize:VT100GridSizeMake(new_width, new_height)];
 
     [primaryGrid_ resetScrollRegions];
     [altGrid_ resetScrollRegions];
@@ -736,8 +732,7 @@ static NSString *const kInlineFileBase64String = @"base64 string";  // NSMutable
     [delegate_ screenSetCursorVisible:show];
 }
 
-- (void)clearBuffer
-{
+- (void)clearBuffer {
     [self clearAndResetScreenPreservingCursorLine];
     [self clearScrollbackBuffer];
     [delegate_ screenUpdateDisplay];
@@ -1128,7 +1123,7 @@ static NSString *const kInlineFileBase64String = @"base64 string";  // NSMutable
     NSNumber *savedX = [state objectForKey:kStateDictSavedCX];
     NSNumber *savedY = [state objectForKey:kStateDictSavedCY];
     if (savedX && savedY) {
-        savedCursor_ = VT100GridCoordMake([savedX intValue], [savedY intValue]);
+        [terminal_ setSavedCursorPosition:VT100GridCoordMake([savedX intValue], [savedY intValue])];
     }
 
     currentGrid_.cursorX = [[state objectForKey:kStateDictCursorX] intValue];
@@ -1232,12 +1227,6 @@ static NSString *const kInlineFileBase64String = @"base64 string";  // NSMutable
                              inContext:context];
 
     [self popScrollbackLines:linesPushed];
-}
-
-- (void)resetCharset {
-    for (int i = 0; i < NUM_CHARSETS; i++) {
-        charsetUsesLineDrawingMode_[i] = NO;
-    }
 }
 
 - (void)setTrackCursorLineMovement:(BOOL)trackCursorLineMovement {
@@ -1930,7 +1919,10 @@ static NSString *const kInlineFileBase64String = @"base64 string";  // NSMutable
     int cursorX = currentGrid_.cursorX;
     int cursorY = currentGrid_.cursorY;
 
-    if ([self shouldReverseWrap]) {
+    if (cursorX >= self.width && terminal_.reverseWraparoundMode && terminal_.wraparoundMode) {
+        // Reverse-wrap when past the screen edge is a special case.
+        currentGrid_.cursor = VT100GridCoordMake(rightMargin, cursorY);
+    } else if ([self shouldReverseWrap]) {
         currentGrid_.cursor = VT100GridCoordMake(rightMargin, cursorY - 1);
     } else if (cursorX > leftMargin ||  // Cursor can move back without hitting the left margin: normal case
                (cursorX < leftMargin && cursorX > 0)) {  // Cursor left of left margin, right of left edge.
@@ -1943,12 +1935,7 @@ static NSString *const kInlineFileBase64String = @"base64 string";  // NSMutable
         }
     }
 
-    // Make sure we didn't land on the right half of a double-width character
-    screen_char_t *aLine = [self getLineAtScreenIndex:currentGrid_.cursorY];
-    unichar c = aLine[currentGrid_.cursorX].code;
-    if ((c == DWC_RIGHT || c == DWC_SKIP) && !aLine[currentGrid_.cursorX].complexChar) {
-        [self doBackspace];
-    }
+    // It is OK to land on the right half of a double-width character (issue 3475).
 }
 
 // Reverse wrap is allowed when the cursor is on the left margin or left edge, wraparoundMode is
@@ -2000,91 +1987,55 @@ static NSString *const kInlineFileBase64String = @"base64 string";  // NSMutable
     }
 }
 
-- (void)terminalAppendTabAtCursor
-{
-    // TODO: respect left-right margins
-    BOOL simulateTabStopAtMargins = NO;
-    if (![self haveTabStopBefore:currentGrid_.size.width + 1]) {
-        // No legal tabstop so pretend there's one on first and last column.
-        simulateTabStopAtMargins = YES;
-        if (currentGrid_.cursor.x == currentGrid_.size.width) {
-            // Cursor in right margin, wrap it around and we're done.
-            [self linefeed];
-            currentGrid_.cursorX = 0;
-            return;
-        } else if (currentGrid_.cursor.x == currentGrid_.size.width - 1) {
-            // Cursor in last column. If there's already a tab there, do nothing.
-            screen_char_t *line = [currentGrid_ screenCharsAtLineNumber:currentGrid_.cursorY];
-            if (currentGrid_.cursorX > 0 &&
-                line[currentGrid_.cursorX].code == 0 &&
-                line[currentGrid_.cursorX - 1].code == '\t') {
-                return;
-            }
+- (int)tabStopAfterColumn:(int)lowerBound {
+    for (int i = lowerBound + 1; i < self.width - 1; i++) {
+        if ([tabStops_ containsObject:@(i)]) {
+            return i;
         }
     }
-    screen_char_t* aLine = [currentGrid_ screenCharsAtLineNumber:currentGrid_.cursorY];
-    int positions = 0;
-    BOOL allNulls = YES;
-
-    // Advance cursor to next tab stop. Count the number of positions advanced
-    // and record whether they were all nulls.
-    if (aLine[currentGrid_.cursorX].code != 0) {
-        allNulls = NO;
-    }
-
-    ++positions;
-    // ensure we go to the next tab in case we are already on one
-    [self advanceCursor:YES];
-    aLine = [currentGrid_ screenCharsAtLineNumber:currentGrid_.cursorY];
-    while (1) {
-        if (currentGrid_.cursorX == currentGrid_.size.width) {
-            // Wrap around to the next line.
-            if (aLine[currentGrid_.cursorX].code == EOL_HARD) {
-                aLine[currentGrid_.cursorX] = [currentGrid_ defaultChar];
-                aLine[currentGrid_.cursorX].code = EOL_SOFT;
-            }
-            [self linefeed];
-            currentGrid_.cursorX = 0;
-            aLine = [currentGrid_ screenCharsAtLineNumber:currentGrid_.cursorY];
-        }
-        BOOL isFirstOrLastColumn = (currentGrid_.cursorX == 0 ||
-                                    currentGrid_.cursorX == currentGrid_.size.width - 1);
-        if ((simulateTabStopAtMargins && isFirstOrLastColumn) ||
-            [self haveTabStopAt:currentGrid_.cursorX]) {
-            break;
-        }
-        if (aLine[currentGrid_.cursorX].code != 0) {
-            allNulls = NO;
-        }
-        [self advanceCursor:YES];
-        ++positions;
-    }
-    if (allNulls) {
-        // If only nulls were advanced over, convert them to tab fillers
-        // and place a tab character at the end of the run.
-        int x = currentGrid_.cursorX;
-        int y = currentGrid_.cursorY;
-        --x;
-        if (x < 0) {
-            x = currentGrid_.size.width - 1;
-            --y;
-        }
-        unichar replacement = '\t';
-        while (positions--) {
-            aLine = [currentGrid_ screenCharsAtLineNumber:y];
-            aLine[x].code = replacement;
-            replacement = TAB_FILLER;
-            --x;
-            if (x < 0) {
-                x = currentGrid_.size.width - 1;
-                --y;
-            }
-        }
-    }
+    return self.width - 1;
 }
 
-- (void)terminalLineFeed
-{
+- (void)terminalAppendTabAtCursor {
+    int rightMargin;
+    if (currentGrid_.useScrollRegionCols) {
+        rightMargin = currentGrid_.rightMargin;
+        if (currentGrid_.cursorX > rightMargin) {
+            rightMargin = self.width - 1;
+        }
+    } else {
+        rightMargin = self.width - 1;
+    }
+
+    if (terminal_.moreFix && self.cursorX > self.width && terminal_.wraparoundMode) {
+        [self terminalLineFeed];
+        [self terminalCarriageReturn];
+    }
+
+    int nextTabStop = MIN(rightMargin, [self tabStopAfterColumn:currentGrid_.cursorX]);
+    if (nextTabStop <= currentGrid_.cursorX) {
+        // This would only happen if the cursor were at or past the right margin.
+        return;
+    }
+    screen_char_t* aLine = [currentGrid_ screenCharsAtLineNumber:currentGrid_.cursorY];
+    BOOL allNulls = YES;
+    for (int i = currentGrid_.cursorX; i < nextTabStop; i++) {
+        if (aLine[i].code) {
+            allNulls = NO;
+            break;
+        }
+    }
+    if (allNulls) {
+        int i;
+        for (i = currentGrid_.cursorX; i < nextTabStop - 1; i++) {
+            aLine[i].code = TAB_FILLER;
+        }
+        aLine[i].code = '\t';
+    }
+    currentGrid_.cursorX = nextTabStop;
+}
+
+- (void)terminalLineFeed {
     if (collectInputForPrinting_) {
         [printBuffer_ appendString:@"\n"];
     } else {
@@ -2151,33 +2102,6 @@ static NSString *const kInlineFileBase64String = @"base64 string";  // NSMutable
     currentGrid_.cursor = VT100GridCoordMake(0, 0);
 }
 
-- (void)terminalRestoreCursor
-{
-    currentGrid_.cursor = savedCursor_;
-}
-
-- (void)terminalRestoreCharsetFlags
-{
-    memmove(charsetUsesLineDrawingMode_,
-            savedCharsetUsesLineDrawingMode_,
-            sizeof(savedCharsetUsesLineDrawingMode_));
-
-    [delegate_ screenTriggerableChangeDidOccur];
-}
-
-- (void)terminalSaveCursor
-{
-    [currentGrid_ clampCursorPositionToValid];
-    savedCursor_ = currentGrid_.cursor;
-}
-
-- (void)terminalSaveCharsetFlags
-{
-    memmove(savedCharsetUsesLineDrawingMode_,
-            charsetUsesLineDrawingMode_,
-            sizeof(charsetUsesLineDrawingMode_));
-}
-
 - (int)terminalRelativeCursorX {
     return currentGrid_.cursorX - currentGrid_.leftMargin + 1;
 }
@@ -2192,7 +2116,7 @@ static NSString *const kInlineFileBase64String = @"base64 string";  // NSMutable
         top < currentGrid_.size.height &&
         bottom >= 0 &&
         bottom < currentGrid_.size.height &&
-        bottom >= top) {
+        bottom > top) {
         currentGrid_.scrollRegionRows = VT100GridRangeMake(top, bottom - top + 1);
 
         if ([terminal_ originMode]) {
@@ -2287,9 +2211,7 @@ static NSString *const kInlineFileBase64String = @"base64 string";  // NSMutable
 }
 
 - (void)terminalCarriageReturn {
-    if (currentGrid_.useScrollRegionCols && currentGrid_.cursorX == currentGrid_.leftMargin) {
-        // I observed that xterm will move the cursor to the first column when it gets a CR
-        // while the cursor is at the left margin of a vsplit. Not sure why.
+    if (currentGrid_.useScrollRegionCols && currentGrid_.cursorX < currentGrid_.leftMargin) {
         currentGrid_.cursorX = 0;
     } else {
         [currentGrid_ moveCursorToLeftMargin];
@@ -2315,36 +2237,15 @@ static NSString *const kInlineFileBase64String = @"base64 string";  // NSMutable
                                                 unlimitedScrollback:unlimitedScrollback_
                                                  preserveCursorLine:NO]];
     }
-    savedCursor_ = VT100GridCoordMake(0, 0);
 
     [self setInitialTabStops];
 
     for (int i = 0; i < NUM_CHARSETS; i++) {
-        savedCharsetUsesLineDrawingMode_[i] = NO;
         charsetUsesLineDrawingMode_[i] = NO;
     }
     [delegate_ screenDidReset];
     commandStartX_ = commandStartY_ = -1;
     [self showCursor:YES];
-}
-
-- (void)terminalSoftReset {
-    // See note in xterm-terminfo.txt (search for DECSTR).
-
-    // save cursor (fixes origin-mode side-effect)
-    [self terminalSaveCursor];
-    [self terminalSaveCharsetFlags];
-
-    // reset scrolling margins
-    [currentGrid_ resetScrollRegions];
-
-    // reset SGR (done in VT100Terminal)
-    // reset wraparound mode (done in VT100Terminal)
-    // reset application cursor keys (done in VT100Terminal)
-    // reset origin mode (done in VT100Terminal)
-    // restore cursor
-    [self terminalRestoreCursor];
-    [self terminalRestoreCharsetFlags];
 }
 
 - (void)terminalSetCursorType:(ITermCursorType)cursorType {
@@ -2366,6 +2267,10 @@ static NSString *const kInlineFileBase64String = @"base64 string";  // NSMutable
 
 - (void)terminalSetCharset:(int)charset toLineDrawingMode:(BOOL)lineDrawingMode {
     charsetUsesLineDrawingMode_[charset] = lineDrawingMode;
+}
+
+- (BOOL)terminalLineDrawingFlagForCharset:(int)charset {
+    return charsetUsesLineDrawingMode_[charset];
 }
 
 - (void)terminalRemoveTabStops {
@@ -2719,6 +2624,10 @@ static NSString *const kInlineFileBase64String = @"base64 string";  // NSMutable
     [delegate_ screenHandleTmuxInput:token];
 }
 
+- (BOOL)terminalInTmuxMode {
+    return [delegate_ screenInTmuxMode];
+}
+
 - (int)terminalWidth {
     return [self width];
 }
@@ -2793,8 +2702,7 @@ static NSString *const kInlineFileBase64String = @"base64 string";  // NSMutable
     savedIntervalTree_ = temp;
 }
 
-- (void)terminalShowAltBuffer
-{
+- (void)terminalShowAltBuffer {
     if (currentGrid_ == altGrid_) {
         return;
     }
@@ -2814,6 +2722,10 @@ static NSString *const kInlineFileBase64String = @"base64 string";  // NSMutable
     [currentGrid_ markAllCharsDirty:YES];
     [delegate_ screenNeedsRedraw];
     commandStartX_ = commandStartY_ = -1;
+}
+
+- (BOOL)terminalIsShowingAltBuffer {
+    return [self showingAlternateScreen];
 }
 
 - (BOOL)showingAlternateScreen {
@@ -2839,8 +2751,7 @@ static NSString *const kInlineFileBase64String = @"base64 string";  // NSMutable
         }
     }
 }
-- (void)terminalShowPrimaryBufferRestoringCursor:(BOOL)restore
-{
+- (void)terminalShowPrimaryBuffer {
     if (currentGrid_ == altGrid_) {
         [delegate_ screenRemoveSelection];
         [self hideOnScreenNotesAndTruncateSpanners];
@@ -2850,10 +2761,6 @@ static NSString *const kInlineFileBase64String = @"base64 string";  // NSMutable
         [self reloadMarkCache];
 
         [currentGrid_ markAllCharsDirty:YES];
-        if (!restore) {
-            // Don't restore the cursor; instead, continue using the cursor position of the alt grid.
-            currentGrid_.cursor = altGrid_.cursor;
-        }
         [delegate_ screenNeedsRedraw];
     }
 }
@@ -2896,15 +2803,6 @@ static NSString *const kInlineFileBase64String = @"base64 string";  // NSMutable
                             to:VT100GridCoordMake(currentGrid_.size.width - 1,
                                                   currentGrid_.size.height - 1)
                         toChar:[currentGrid_ defaultChar]];
-}
-
-- (void)terminalSendModifiersDidChangeTo:(int *)modifiers
-                               numValues:(int)numValues {
-    NSMutableArray *array = [NSMutableArray array];
-    for (int i = 0; i < numValues; i++) {
-        [array addObject:[NSNumber numberWithInt:modifiers[i]]];
-    }
-    [delegate_ screenModifiersDidChangeTo:array];
 }
 
 - (void)terminalSaveScrollPositionWithArgument:(NSString *)argument {
@@ -3736,33 +3634,6 @@ static void SwapInt(int *a, int *b) {
         [self incrementOverflowBy:[linebuffer_ dropExcessLinesWithWidth:currentGrid_.size.width]];
     }
     [delegate_ screenDidChangeNumberOfScrollbackLines];
-}
-
-- (void)advanceCursor:(BOOL)canOccupyLastSpace
-{
-    // TODO: respect left-right margins
-    int cursorX = currentGrid_.cursorX + 1;
-    if (canOccupyLastSpace) {
-        if (cursorX > currentGrid_.size.width) {
-            screen_char_t* aLine = [currentGrid_ screenCharsAtLineNumber:currentGrid_.cursorY];
-            aLine[currentGrid_.size.width].code = EOL_SOFT;
-            [self linefeed];
-            cursorX = 0;
-        }
-    } else if (cursorX >= currentGrid_.size.width) {
-        [self linefeed];
-        cursorX = 0;
-    }
-    currentGrid_.cursorX = cursorX;
-}
-
-- (BOOL)haveTabStopBefore:(int)limit {
-    for (NSNumber *number in tabStops_) {
-        if ([number intValue] < limit) {
-            return YES;
-        }
-    }
-    return NO;
 }
 
 - (void)cursorToY:(int)y

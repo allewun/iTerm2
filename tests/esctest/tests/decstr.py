@@ -27,7 +27,6 @@ class DECSTRTests(object):
   DECRLM                    Reset (Left-to-right), regardless of NVR setting.
   DECPCTERM                 Always reset."""
 
-  @knownBug(terminal="iTerm2", reason="iTerm2 fails to reset saved cursor position.")
   def test_DECSTR_DECSC(self):
     # Save cursor position
     esccmd.CUP(Point(5, 6))
@@ -65,7 +64,9 @@ class DECSTRTests(object):
     esccmd.DECSTR()
 
     # Define scroll region again
-    esccmd.DECSTBM(3, 4)
+    esccmd.DECSET(esccmd.DECLRMM)
+    esccmd.DECSLRM(3, 4)
+    esccmd.DECSTBM(4, 5)
 
     # Move to 1,1 (or 3,4 if origin mode is still on) and write an X
     esccmd.CUP(Point(1, 1))
@@ -76,7 +77,11 @@ class DECSTRTests(object):
 
     # Make sure the X was at 1, 1, implying origin mode was off.
     esccmd.DECSTBM()
-    AssertScreenCharsInRectEqual(Rect(1, 1, 1, 1), [ "X" ])
+    esccmd.DECRESET(esccmd.DECLRMM)
+    AssertScreenCharsInRectEqual(Rect(1, 1, 3, 4), [ "X" + NUL * 2,
+                                                     NUL * 3,
+                                                     NUL * 3,
+                                                     NUL * 3 ])
 
   @intentionalDeviationFromSpec(terminal="iTerm2",
                                 reason="For compatibility purposes, iTerm2 mimics xterm's behavior of turning on DECAWM by default.")
@@ -95,7 +100,6 @@ class DECSTRTests(object):
     position = GetCursorPosition()
     AssertEQ(position.x(), 2)
 
-  @knownBug(terminal="iTerm2", reason="Reverse wrap is always on in iTerm2")
   def test_DECSTR_ReverseWraparound(self):
     # Turn on reverse wraparound
     esccmd.DECSET(esccmd.ReverseWraparound)
@@ -104,8 +108,8 @@ class DECSTRTests(object):
     esccmd.DECSTR()
 
     # Verify reverse wrap is off
-    esccmd.CUP(Point(GetScreenSize().width() - 1, 2))
-    escio.Write("abc" + BS * 3)
+    esccmd.CUP(Point(1, 2))
+    escio.Write(BS)
     AssertEQ(GetCursorPosition().x(), 1)
 
   def test_DECSTR_STBM(self):

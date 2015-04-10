@@ -1607,10 +1607,6 @@ NSMutableArray* screens=0;
         NSLog(@"%p Moving average time draw rect is %04f, time between calls to drawRect is %04f",
               self, drawRectDuration_.value, drawRectInterval_.value);
     }
-    CGFloat badgeWidth = 0;
-    if (_badgeImage) {
-        badgeWidth = _badgeImage.size.width + kBadgeMargin + kBadgeRightMargin;
-    }
 
     [_indicatorsHelper setIndicator:kiTermIndicatorMaximized
                             visible:[_delegate textViewIsMaximized]];
@@ -2331,9 +2327,6 @@ NSMutableArray* screens=0;
 
 - (void)scrollWheel:(NSEvent *)event {
     DLog(@"scrollWheel:%@", event);
-    NSPoint locationInWindow, locationInTextView;
-    locationInWindow = [event locationInWindow];
-    locationInTextView = [self convertPoint: locationInWindow fromView: nil];
 
     NSPoint point = [self convertPoint:[event locationInWindow] fromView:nil];
 
@@ -2726,13 +2719,9 @@ NSMutableArray* screens=0;
         return YES;
     }
 
-    NSPoint locationInWindow, locationInTextView;
     NSPoint clickPoint = [self clickPoint:event allowRightMarginOverflow:YES];
     int x = clickPoint.x;
     int y = clickPoint.y;
-
-    locationInWindow = [event locationInWindow];
-    locationInTextView = [self convertPoint: locationInWindow fromView: nil];
 
     if (_numTouches <= 1) {
         for (NSView *view in [self subviews]) {
@@ -3844,15 +3833,11 @@ static double EuclideanDistance(NSPoint p1, NSPoint p2) {
     NSPasteboard *pboard = [NSPasteboard generalPasteboard];
 
     DLog(@"-[PTYTextView copyWithStyles:] called");
-    NSString *copyString = [self selectedText];
     NSAttributedString *copyAttributedString = [self selectedAttributedTextWithPad:NO];
-    DLog(@"Have selected text of length %d. selection=%@", (int)[copyString length], _selection);
+    DLog(@"Have selected text of length %d. selection=%@", (int)[copyAttributedString length], _selection);
     NSMutableArray *types = [NSMutableArray array];
     if (copyAttributedString) {
         [types addObject:NSRTFPboardType];
-    }
-    if (copyString) {
-        [types addObject:NSStringPboardType];
     }
     [pboard declareTypes:types owner:self];
     if (copyAttributedString) {
@@ -3860,11 +3845,11 @@ static double EuclideanDistance(NSPoint p1, NSPoint p2) {
                                           documentAttributes:nil];
         [pboard setData:RTFData forType:NSRTFPboardType];
     }
-    if (copyString) {
-        [pboard setString:copyString forType:NSStringPboardType];
-    }
-
-    [[PasteboardHistory sharedInstance] save:copyString];
+    // I used to do
+    //   [pboard setString:[copyAttributedString string] forType:NSStringPboardType]
+    // but this seems to take precedence over the attributed version for
+    // pasting sometimes, for example in TextEdit.
+    [[PasteboardHistory sharedInstance] save:[copyAttributedString string]];
 }
 
 // Returns a dictionary to pass to NSAttributedString.
@@ -3894,7 +3879,7 @@ static double EuclideanDistance(NSPoint p1, NSPoint p2) {
                                        isComplex:c.complexChar
                                       renderBold:&isBold
                                     renderItalic:&isItalic];
-    NSMutableParagraphStyle *paragraphStyle = [[NSMutableParagraphStyle alloc] init];
+    NSMutableParagraphStyle *paragraphStyle = [[[NSMutableParagraphStyle alloc] init] autorelease];
     paragraphStyle.lineBreakMode = NSLineBreakByCharWrapping;
 
     return @{ NSForegroundColorAttributeName: fgColor,
@@ -5027,8 +5012,8 @@ static double EuclideanDistance(NSPoint p1, NSPoint p2) {
         CGFloat min = 4, max = 100;
         int points = (min + max / 2);
         int prevPoints = -1;
-        NSSize sizeWithFont;
-        NSDictionary *attributes;
+        NSSize sizeWithFont = NSZeroSize;
+        NSDictionary *attributes = nil;
         NSColor *backgroundColor = [_colorMap colorForKey:kColorMapBackground];
         NSFontManager *fontManager = [NSFontManager sharedFontManager];
         NSMutableParagraphStyle *paragraphStyle = [[[NSMutableParagraphStyle alloc] init] autorelease];
@@ -5051,7 +5036,7 @@ static double EuclideanDistance(NSPoint p1, NSPoint p2) {
             points = (min + max) / 2;
         }
         if (sizeWithFont.width > 0 && sizeWithFont.height > 0) {
-            NSImage *image = [[NSImage alloc] initWithSize:sizeWithFont];
+            NSImage *image = [[[NSImage alloc] initWithSize:sizeWithFont] autorelease];
             [image lockFocus];
             NSMutableDictionary *temp = [[attributes mutableCopy] autorelease];
             temp[NSStrokeWidthAttributeName] = @-2;
@@ -6051,7 +6036,17 @@ static double EuclideanDistance(NSPoint p1, NSPoint p2) {
           range.location = 0;
           size_t length = CTRunGetGlyphCount(run);
           const CGGlyph *buffer = CTRunGetGlyphsPtr(run);
+          if (!buffer) {
+              NSMutableData *tempBuffer = [[[NSMutableData alloc] initWithLength:sizeof(CGGlyph) * length] autorelease];
+              CTRunGetGlyphs(run, CFRangeMake(0, length), (CGGlyph *)tempBuffer.mutableBytes);
+              buffer = tempBuffer.mutableBytes;
+          }
           const CGPoint *positions = CTRunGetPositionsPtr(run);
+          if (!positions) {
+              NSMutableData *tempBuffer = [[[NSMutableData alloc] initWithLength:sizeof(CGPoint) * length] autorelease];
+              CTRunGetPositions(run, CFRangeMake(0, length), (CGPoint *)tempBuffer.mutableBytes);
+              positions = tempBuffer.mutableBytes;
+          }
           CTFontRef runFont = CFDictionaryGetValue(CTRunGetAttributes(run), kCTFontAttributeName);
           CTFontDrawGlyphs(runFont, buffer, (NSPoint *)positions, length, cgContext);
           if (fakeBold) {
@@ -6445,6 +6440,7 @@ static double EuclideanDistance(NSPoint p1, NSPoint p2) {
     int limit = charRange.location + charRange.length;
     NSIndexSet *selectedIndexes = [_selection selectedIndexesOnLine:line];
     iTermTextExtractor *extractor = [iTermTextExtractor textExtractorWithDataSource:_dataSource];
+    NSIndexSet *orphanedTabFillers = [extractor tabFillerOrphansOnRow:line];
     while (j < limit) {
         if (theLine[j].code == DWC_RIGHT) {
             // Do not draw the right-hand side of double-width characters.
@@ -6458,8 +6454,8 @@ static double EuclideanDistance(NSPoint p1, NSPoint p2) {
         BOOL selected;
         if (theLine[j].code == DWC_SKIP) {
             selected = NO;
-        } else if (theLine[j].code == TAB_FILLER) {
-            if ([extractor isTabFillerOrphanAt:VT100GridCoordMake(j, line)]) {
+        } else if (theLine[j].code == TAB_FILLER && !theLine[j].complexChar) {
+            if ([orphanedTabFillers containsIndex:j]) {
                 // Treat orphaned tab fillers like spaces.
                 selected = [selectedIndexes containsIndex:j];
             } else {
@@ -7306,6 +7302,10 @@ static double EuclideanDistance(NSPoint p1, NSPoint p2) {
                                   isDoubleWidth:isDoubleWidth
                                         atPoint:cursorOrigin
                                           color:bgColor];
+                break;
+
+            case CURSOR_DEFAULT:
+                assert(false);
                 break;
         }
     }

@@ -426,7 +426,6 @@ static NSTimeInterval kMinimumPartialLineTriggerCheckInterval = 0.5;
     [_liveSession release];
     [_tmuxGateway release];
     [_tmuxController release];
-    [_sendModifiers release];
     [_download stop];
     [_download endOfData];
     [_download release];
@@ -530,7 +529,7 @@ static NSTimeInterval kMinimumPartialLineTriggerCheckInterval = 0.5;
 
 - (void)updateVariables {
     if (_name) {
-        _variables[kVariableKeySessionName] = [_name copy];
+        _variables[kVariableKeySessionName] = [[_name copy] autorelease];
     } else {
         [_variables removeObjectForKey:kVariableKeySessionName];
     }
@@ -648,11 +647,16 @@ static NSTimeInterval kMinimumPartialLineTriggerCheckInterval = 0.5;
     [aSession setTab:theTab];
     NSNumber *n = [arrangement objectForKey:SESSION_ARRANGEMENT_TMUX_PANE];
     if (!n) {
-        [aSession runCommandWithOldCwd:[arrangement objectForKey:SESSION_ARRANGEMENT_WORKING_DIRECTORY]
-                         forObjectType:objectType];
-
         // |contents| will be non-nil when using system window restoration.
         NSDictionary *contents = arrangement[SESSION_ARRANGEMENT_CONTENTS];
+
+        // When restoring a window arrangement with contents and a nonempty saved directory, always
+        // use the saved working directory, even if that contravenes the default setting for the
+        // profile.
+        NSString *oldCWD = arrangement[SESSION_ARRANGEMENT_WORKING_DIRECTORY];
+        [aSession runCommandWithOldCwd:oldCWD
+                         forObjectType:objectType
+                        forceUseOldCWD:contents != nil && oldCWD.length];
 
         // GUID will be set for new saved arrangements since late 2014.
         // Older versions won't be able to associate saved state with windows from a saved arrangement.
@@ -775,7 +779,18 @@ static NSTimeInterval kMinimumPartialLineTriggerCheckInterval = 0.5;
     // Allocate a text view
     NSSize aSize = [_scrollview contentSize];
     _wrapper = [[TextViewWrapper alloc] initWithFrame:NSMakeRect(0, 0, aSize.width, aSize.height)];
-    [_wrapper setAutoresizingMask:NSViewWidthSizable | NSViewHeightSizable | NSViewMaxYMargin];
+
+    // In commit f6dabc53024d13ec1bd7be92bf505f72f87ea779, the max-y margin was
+    // made flexible. The commit description there explains why. But then I
+    // found that it was causing unsatisfiable constraints that were more
+    // reproducible when maximizing a tmux window. It had a constraint like
+    // this:
+    //     "<NSAutoresizingMaskLayoutConstraint:0x60000068a230 h=-&- v=-&& TextViewWrapper:0x60800012b900.height == 3.0687*NSClipView:0x1009d6920.height - 6.1374>",
+    // Which is obviously wrong. This is a less-wrong answer, but still pretty
+    // obviously broken. Maybe I shouldn't use autoresizing masks for the
+    // wrapper at all. This is a big complicated mess that I need to
+    // disentangle.
+    [_wrapper setAutoresizingMask:NSViewWidthSizable | NSViewHeightSizable];
 
     _textview = [[PTYTextView alloc] initWithFrame: NSMakeRect(0, VMARGIN, aSize.width, aSize.height)
                                           colorMap:_colorMap];
@@ -827,7 +842,7 @@ static NSTimeInterval kMinimumPartialLineTriggerCheckInterval = 0.5;
 
 - (void)runCommandWithOldCwd:(NSString*)oldCWD
                forObjectType:(iTermObjectType)objectType
-{
+              forceUseOldCWD:(BOOL)forceUseOldCWD {
     NSMutableString *cmd;
     NSArray *arg;
     NSString *pwd;
@@ -835,7 +850,13 @@ static NSTimeInterval kMinimumPartialLineTriggerCheckInterval = 0.5;
 
     // Grab the addressbook command
     Profile* addressbookEntry = [self profile];
-    cmd = [[[NSMutableString alloc] initWithString:[ITAddressBookMgr bookmarkCommand:addressbookEntry
+    Profile *profileForComputingCommand = addressbookEntry;
+    if (forceUseOldCWD) {
+        NSMutableDictionary *hackedProfile = [[addressbookEntry mutableCopy] autorelease];
+        hackedProfile[KEY_CUSTOM_DIRECTORY] = kProfilePreferenceInitialDirectoryCustomValue;
+        profileForComputingCommand = hackedProfile;
+    }
+    cmd = [[[NSMutableString alloc] initWithString:[ITAddressBookMgr bookmarkCommand:profileForComputingCommand
                                                                        forObjectType:objectType]] autorelease];
     NSMutableString* theName = [[[NSMutableString alloc] initWithString:[addressbookEntry objectForKey:KEY_NAME]] autorelease];
     // Get session parameters
@@ -849,8 +870,12 @@ static NSTimeInterval kMinimumPartialLineTriggerCheckInterval = 0.5;
         arg = @[];
     }
 
-    pwd = [ITAddressBookMgr bookmarkWorkingDirectory:addressbookEntry
-                                       forObjectType:objectType];
+    if (forceUseOldCWD) {
+        pwd = oldCWD;
+    } else {
+        pwd = [ITAddressBookMgr bookmarkWorkingDirectory:addressbookEntry
+                                           forObjectType:objectType];
+    }
     if ([pwd length] == 0) {
         if (oldCWD) {
             pwd = oldCWD;
@@ -1165,7 +1190,7 @@ static NSTimeInterval kMinimumPartialLineTriggerCheckInterval = 0.5;
         _tmuxGateway = nil;
     }
     BOOL undoable = ![self isTmuxClient] && !_shouldRestart;
-    _terminal.parser.tmuxParser = nil;
+    [_terminal.parser forceUnhookDCS];
     self.tmuxMode = TMUX_NONE;
     [_tmuxController release];
     _tmuxController = nil;
@@ -2336,6 +2361,10 @@ static NSTimeInterval kMinimumPartialLineTriggerCheckInterval = 0.5;
     return [_badgeFormat stringByReplacingVariableReferencesWithVariables:_variables];
 }
 
+- (BOOL)isAtShellPrompt {
+    return _commandRange.start.x >= 0;
+}
+
 - (BOOL)isProcessing {
     NSTimeInterval now = [NSDate timeIntervalSinceReferenceDate];
     return (now - _lastOutput) < [iTermAdvancedSettingsModel idleTimeSeconds];
@@ -2741,8 +2770,7 @@ static NSTimeInterval kMinimumPartialLineTriggerCheckInterval = 0.5;
     [_shell loggingStop];
 }
 
-- (void)clearBuffer
-{
+- (void)clearBuffer {
     [_screen clearBuffer];
 }
 
@@ -3362,6 +3390,10 @@ static NSTimeInterval kMinimumPartialLineTriggerCheckInterval = 0.5;
     [[[[self tab] realParentWindow] window] makeFirstResponder:_textview];
 }
 
+- (void)findViewControllerMakeDocumentFirstResponder {
+    [self takeFocus];
+}
+
 - (void)clearHighlights
 {
     [_textview clearHighlights];
@@ -3486,14 +3518,11 @@ static NSTimeInterval kMinimumPartialLineTriggerCheckInterval = 0.5;
     [self launchCoprocessWithCommand:command mute:YES];
 }
 
-- (void)setFocused:(BOOL)focused
-{
+- (void)setFocused:(BOOL)focused {
     if (focused != _focused) {
         _focused = focused;
         if ([_terminal reportFocus]) {
-            char flag = focused ? 'I' : 'O';
-            NSString *message = [NSString stringWithFormat:@"%c[%c", 27, flag];
-            [self writeTask:[message dataUsingEncoding:[self encoding]]];
+            [self writeTask:[_terminal.output reportFocusGained:focused]];
         }
     }
 }
@@ -3798,7 +3827,7 @@ static NSTimeInterval kMinimumPartialLineTriggerCheckInterval = 0.5;
     // There's a not-so-bad race condition here. It's possible that tmux would exit and a new
     // session would start right away and we'd wack the wrong tmux parser. However, it would be
     // very unusual for that to happen so quickly.
-    _terminal.parser.tmuxParser = nil;
+    [_terminal.parser forceUnhookDCS];
     self.tmuxMode = TMUX_NONE;
 
     if ([iTermPreferences boolForKey:kPreferenceKeyAutoHideTmuxClientSession] &&
@@ -5340,6 +5369,9 @@ static NSTimeInterval kMinimumPartialLineTriggerCheckInterval = 0.5;
 }
 
 - (void)screenSetCursorType:(ITermCursorType)type {
+    if (type == CURSOR_DEFAULT) {
+        type = [iTermProfilePreferences intForKey:KEY_CURSOR_TYPE inProfile:_profile];
+    }
     [[self textview] setCursorType:type];
 }
 
@@ -5485,8 +5517,8 @@ static NSTimeInterval kMinimumPartialLineTriggerCheckInterval = 0.5;
     [_tmuxGateway executeToken:token];
 }
 
-- (void)screenModifiersDidChangeTo:(NSArray *)modifiers {
-    [self setSendModifiers:modifiers];
+- (BOOL)screenInTmuxMode {
+    return [self isTmuxClient];
 }
 
 - (BOOL)screenShouldTreatAmbiguousCharsAsDoubleWidth {

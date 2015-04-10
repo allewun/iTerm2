@@ -13,14 +13,12 @@ class DA2Tests(object):
     elif escargs.args.expected_terminal == "iTerm2":
       AssertEQ(params[0], 0)
       AssertEQ(params[1], 95)
-      AssertEQ(len(params), 2)
+      AssertEQ(len(params), 3)
 
-  @knownBug(terminal="iTerm2", reason="Extra empty parameter at end of response")
   def test_DA2_NoParameter(self):
     esccmd.DA2()
     self.handleDA2Response()
 
-  @knownBug(terminal="iTerm2", reason="Extra empty parameter at end of response")
   def test_DA2_0(self):
     esccmd.DA2(0)
     self.handleDA2Response()

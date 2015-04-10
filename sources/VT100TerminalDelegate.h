@@ -73,16 +73,6 @@ typedef enum {
 // Replaces the screen contents with a test pattern.
 - (void)terminalShowTestPattern;
 
-// Restores the cursor position and charset flags.
-- (void)terminalRestoreCursor;
-- (void)terminalRestoreCharsetFlags;
-
-// Saves the cursor position.
-- (void)terminalSaveCursor;
-
-// Save line-drawing-mode flags.
-- (void)terminalSaveCharsetFlags;
-
 // Returns the cursor's position relative to the scroll region's origin. 1-based.
 - (int)terminalRelativeCursorX;
 
@@ -117,9 +107,6 @@ typedef enum {
 // Clear the screen, preserving the cursor's line.
 - (void)terminalResetPreservingPrompt:(BOOL)preservePrompt;
 
-// Saves the cursor, resets the scroll region, and restores the cursor position and charset flags.
-- (void)terminalSoftReset;
-
 // Changes the cursor type.
 - (void)terminalSetCursorType:(ITermCursorType)cursorType;
 
@@ -131,6 +118,7 @@ typedef enum {
 
 // Sets whether one charset is in linedrawing mode.
 - (void)terminalSetCharset:(int)charset toLineDrawingMode:(BOOL)lineDrawingMode;
+- (BOOL)terminalLineDrawingFlagForCharset:(int)index;
 
 // Remove all tab stops.
 - (void)terminalRemoveTabStops;
@@ -237,6 +225,9 @@ typedef enum {
 // Handles input during tmux mode. A single line of input will be in the token's string.
 - (void)terminalHandleTmuxInput:(VT100Token *)token;
 
+// Are we currently in tmux mode?
+- (BOOL)terminalInTmuxMode;
+
 // Returns the size of the terminal in cells.
 - (int)terminalWidth;
 - (int)terminalHeight;
@@ -253,20 +244,16 @@ typedef enum {
 
 // Switches the currently visible buffer.
 - (void)terminalShowAltBuffer;
+- (BOOL)terminalIsShowingAltBuffer;
 
-// If restore is set, then the saved cursor position is used, otherwise the alt grid's cursor position
-// is used. Does nothing if already on the alt grid.
-- (void)terminalShowPrimaryBufferRestoringCursor:(BOOL)restore;
+// Show main (primary) buffer. Does nothing if already on the alt grid.
+- (void)terminalShowPrimaryBuffer;
 
 // Clears the screen, preserving the wrapped line the cursor is on.
 - (void)terminalClearScreen;
 
 // Erase scrollback history, leave screen alone.
 - (void)terminalClearScrollbackBuffer;
-
-// Not quite sure, kind of a mess right now. See comment in -[PTYSession setSendModifiers:].
-- (void)terminalSendModifiersDidChangeTo:(int *)modifiers
-                               numValues:(int)numValues;
 
 // Saves the current scroll position in the window.
 - (void)terminalSaveScrollPositionWithArgument:(NSString *)argument;

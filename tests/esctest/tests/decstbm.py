@@ -34,8 +34,6 @@ class DECSTBMTests(object):
     esccmd.DECSTBM(2, 3)
     AssertEQ(GetCursorPosition(), Point(1, 1))
 
-  @knownBug(terminal="iTerm2",
-            reason="iTerm2 sets a scroll region but should not.")
   def test_DECSTBM_TopBelowBottom(self):
     """The value of the top margin (Pt) must be less than the bottom margin (Pb)."""
     size = GetScreenSize()
@@ -71,8 +69,6 @@ class DECSTBMTests(object):
     AssertScreenCharsInRectEqual(Rect(1, 2, 1, 3), [ "1", "2" ])
     AssertEQ(GetCursorPosition().y(), 4)
 
-  @knownBug(terminal="iTerm2",
-            reason="iTerm2 incorretly scrolls the whole screen when there's a bottom margin above the bottom of the page, the cursor is at the bottom of the page, and a LF is received. No scrolling should occur outside the margins.")
   def test_DECSTBM_CursorBelowRegionAtBottomTriesToScroll(self):
     """You cannot perform scrolling outside the margins."""
     esccmd.DECSTBM(2, 3)

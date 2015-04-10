@@ -208,8 +208,6 @@ static const CGFloat kHorizontalTabBarHeight = 22;
     int nextSessionRows_;
     int nextSessionColumns_;
 
-    BOOL tempDisableProgressIndicators_;
-
     int windowType_;
     // Window type before entering fullscreen. Only relevant if in/entering fullscreen.
     int savedWindowType_;
@@ -442,7 +440,7 @@ static const CGFloat kHorizontalTabBarHeight = 22;
     windowType_ = windowType;
     broadcastViewIds_ = [[NSMutableSet alloc] init];
 
-    NSScreen* screen;
+    NSScreen* screen = nil;
     if (screenNumber == -1 || screenNumber >= [[NSScreen screens] count])  {
         screen = [[self window] screen];
         DLog(@"Screen number %d is out of range [0,%d] so using 0",
@@ -701,7 +699,7 @@ static const CGFloat kHorizontalTabBarHeight = 22;
     wellFormed_ = YES;
     [[self window] setRestorable:YES];
     [[self window] setRestorationClass:[PseudoTerminalRestorer class]];
-    self.terminalGuid = [[NSString stringWithFormat:@"pty-%@", [NSString uuid]] retain];
+    self.terminalGuid = [NSString stringWithFormat:@"pty-%@", [NSString uuid]];
 
     if ([self.window respondsToSelector:@selector(addTitlebarAccessoryViewController:)]) {
         _shortcutAccessoryViewController =
@@ -1740,7 +1738,7 @@ static const CGFloat kHorizontalTabBarHeight = 22;
                                  rect.size.width - 2,
                                  10);
     NSSize step = NSMakeSize(MIN(20, floor((rect.size.width - 2) / N)), 6);
-    NSSize tabSize;
+    NSSize tabSize = NSZeroSize;
     const CGFloat kLeftTabPreviewWidth = 20;
     switch ([iTermPreferences intForKey:kPreferenceKeyTabPosition]) {
         case PSMTab_BottomTab:
@@ -2080,7 +2078,7 @@ static const CGFloat kHorizontalTabBarHeight = 22;
     }
     if ([arrangement objectForKey:TERMINAL_GUID] &&
         [[arrangement objectForKey:TERMINAL_GUID] isKindOfClass:[NSString class]]) {
-        self.terminalGuid = [[arrangement objectForKey:TERMINAL_GUID] retain];
+        self.terminalGuid = [arrangement objectForKey:TERMINAL_GUID];
     }
 
     [self fitTabsToWindow];
@@ -3231,7 +3229,8 @@ static const CGFloat kHorizontalTabBarHeight = 22;
             oldFrame_.size = [self preferredWindowFrameToPerfectlyFitCurrentSessionInInitialConfiguration];
         }
         [self.window setFrame:oldFrame_ display:YES];
-        if ([self.window respondsToSelector:@selector(addTitlebarAccessoryViewController:)]) {
+        if ([self.window respondsToSelector:@selector(addTitlebarAccessoryViewController:)] &&
+            (self.window.styleMask & NSTitledWindowMask)) {
             [self.window addTitlebarAccessoryViewController:_shortcutAccessoryViewController];
         }
         PtyLog(@"toggleFullScreenMode - allocate new terminal");
@@ -5330,11 +5329,6 @@ static const CGFloat kHorizontalTabBarHeight = 22;
     return minWidth;
 }
 
-- (BOOL)disableProgressIndicators
-{
-    return tempDisableProgressIndicators_;
-}
-
 - (void)appendTab:(PTYTab*)aTab
 {
     [self insertTab:aTab atIndex:[TABVIEW numberOfTabViewItems]];
@@ -5651,8 +5645,7 @@ static const CGFloat kHorizontalTabBarHeight = 22;
     }
 }
 
-- (void)_refreshTerminal:(NSNotification *)aNotification
-{
+- (void)_refreshTerminal:(NSNotification *)aNotification {
     PtyLog(@"_refreshTerminal - calling fitWindowToTabs");
 
     [self updateTabBarStyle];
@@ -5693,6 +5686,9 @@ static const CGFloat kHorizontalTabBarHeight = 22;
             needResize = YES;
         }
         [aTab setObjectCount:i+1];
+
+        // Update activity indicator.
+        [aTab setIsProcessing:[aTab realIsProcessing]];
 
         // Update dimmed status of inactive sessions in split panes in case the preference changed.
         for (PTYSession* aSession in [aTab sessions]) {
@@ -5903,32 +5899,8 @@ static const CGFloat kHorizontalTabBarHeight = 22;
     return [[self window] frameRectForContentRect:NSMakeRect(0, 0, contentSize.width, contentSize.height)].size;
 }
 
-- (void)_setDisableProgressIndicators:(BOOL)value
-{
-    tempDisableProgressIndicators_ = value;
-    for (NSTabViewItem* anItem in [TABVIEW tabViewItems]) {
-        PTYTab* theTab = [anItem identifier];
-        [theTab setIsProcessing:[theTab realIsProcessing]];
-    }
-}
-
-void (^gDoomedBlock)(int);
-+ (void)callDoomedBlock:(int)value {
-    gDoomedBlock(value);
-}
-int aGlobalVariable;
-
 - (void)flagsChanged:(NSEvent *)theEvent
 {
-    aGlobalVariable = 1;
-    static int i;
-    if (i == 0) {
-
-        void (^doomedBlock)(int) = ^void(int value) {NSLog(@"%d", value); };
-        gDoomedBlock= doomedBlock;
-    }
-    i++;
-
     [[NSNotificationCenter defaultCenter] postNotificationName:@"iTermFlagsChanged"
                                                         object:theEvent
                                                       userInfo:nil];
@@ -6485,9 +6457,8 @@ int aGlobalVariable;
     [[[self currentSession] terminal] resetCharset];
 }
 
-// Clear the buffer of the current session.
-- (void)clearBuffer:(id)sender
-{
+// Clear the buffer of the current session (Edit>Clear Buffer).
+- (void)clearBuffer:(id)sender {
     [[self currentSession] clearBuffer];
 }
 
@@ -7047,7 +7018,9 @@ int aGlobalVariable;
         } else {
             objectType = iTermTabObject;
         }
-        [aSession runCommandWithOldCwd:previousDirectory forObjectType:objectType];
+        [aSession runCommandWithOldCwd:previousDirectory
+                         forObjectType:objectType
+                        forceUseOldCWD:NO];
         if ([[[self window] title] compare:@"Window"] == NSOrderedSame) {
             [self setWindowTitle];
         }

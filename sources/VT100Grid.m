@@ -397,8 +397,7 @@
     // This doesn't call -bottomMargin because it was a hotspot in profiling.
     const int scrollBottom = VT100GridRangeMax(scrollRegionRows_);
 
-    if (cursor_.y < scrollBottom ||
-        (cursor_.y < (size_.height - 1) && cursor_.y > scrollBottom)) {
+    if (cursor_.y != scrollBottom) {
         // Do not scroll the screen; just move the cursor.
         self.cursorY = cursor_.y + 1;
         DLog(@"moved cursor down by 1 line");
@@ -418,11 +417,19 @@
 - (void)moveCursorLeft:(int)n {
     if ([self haveColumnScrollRegion]) {
         // Don't allow cursor to wrap around the left margin when there is a
-        // column scroll region.
+        // column scroll region. If the cursor begins at/right of the left margin, it stops at the
+        // left margin. If the cursor begins left of the left margin, it stops at the left edge.
         int x = cursor_.x - n;
         const int leftMargin = [self leftMargin];
 
-        x = MAX(leftMargin, x);
+        int limit;
+        if (cursor_.x < leftMargin) {
+            limit = 0;
+        } else {
+            limit = leftMargin;
+        }
+
+        x = MAX(limit, x);
         self.cursorX = x;
         return;
     }
@@ -633,19 +640,18 @@
         }
 
         if (useScrollRegionCols_ && cursor_.x <= scrollRight + 1) {
-            // If the cursor is at the left of right margin,
+            // If the cursor is left of the right margin,
             // the text run stops (or wraps) at right margin.
-            // And if a text wraps at right margin,
+            // And if a text run wraps at the right margin,
             // the next line starts from left margin.
             //
-            // TODO:
+            // NOTE:
             //    Above behavior is compatible with xterm, but incompatible with VT525.
-            //    VT525 have curious glitch:
-            //        If a text run which starts from the left of left margin
+            //    VT525 has curious glitch:
+            //        If a text run which starts from left of the left margin
             //        wraps or returns by CR, the next line starts from column 1, but not left margin.
             //        (see Mr. IWAMOTO's gist https://gist.github.com/ttdoda/5902671)
-            //    Now we do not implement this behavior because it is hard to emulate that.
-            //
+            //    We're going for xterm compatibility, not VT525 compatibility.
             leftMargin = scrollLeft;
             rightMargin = scrollRight + 1;
         } else {
@@ -681,24 +687,26 @@
                 // and insert the last character there.
 
                 // Cause the loop to end after this character.
-                int ncx = size_.width - 1;
+                int newCursorX = rightMargin - 1;
 
                 idx = len - 1;
                 if (buffer[idx].code == DWC_RIGHT && idx > startIdx) {
                     // The last character to insert is double width. Back up one
                     // byte in buffer and move the cursor left one position.
                     idx--;
-                    ncx--;
+                    newCursorX--;
                 }
-                
-                // Clear the continuation marker
-                screen_char_t *line = [self screenCharsAtLineNumber:cursor_.y];
-                line[size_.width].code = EOL_HARD;
 
-                if (ncx < 0) {
-                    ncx = 0;
+                screen_char_t *line = [self screenCharsAtLineNumber:cursor_.y];
+                if (rightMargin == size_.width) {
+                    // Clear the continuation marker
+                    line[size_.width].code = EOL_HARD;
                 }
-                self.cursorX = ncx;
+
+                if (newCursorX < 0) {
+                    newCursorX = 0;
+                }
+                self.cursorX = newCursorX;
                 if (line[cursor_.x].code == DWC_RIGHT) {
                     // This would cause us to overwrite the second part of a
                     // double-width character. Convert it to a space.
@@ -782,6 +790,13 @@
             mayStompSplitDwc = (!useScrollRegionCols_ &&
                                 aLine[size_.width].code == EOL_DWC &&
                                 aLine[size_.width - 1].code == DWC_SKIP);
+        } else if (!wraparound &&
+                   rightMargin < size_.width &&
+                   useScrollRegionCols_ &&
+                   newx >= rightMargin &&
+                   cursor_.x < rightMargin) {
+            // Prevent the cursor from going past the right margin when wraparound is off.
+            newx = rightMargin - 1;
         }
 
         if (insert) {

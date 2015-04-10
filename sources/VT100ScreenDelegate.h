@@ -122,8 +122,8 @@
 // Handle a line of input in tmux mode in the token's string.
 - (void)screenHandleTmuxInput:(VT100Token *)token;
 
-// See comment in setSendModifiers:
-- (void)screenModifiersDidChangeTo:(NSArray *)modifiers;
+// Are we in tmux mode?
+- (BOOL)screenInTmuxMode;
 
 // Returns if ambiguous characters are treated as fullwidth.
 - (BOOL)screenShouldTreatAmbiguousCharsAsDoubleWidth;

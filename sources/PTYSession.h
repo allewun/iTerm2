@@ -178,13 +178,6 @@ typedef enum {
 // Profile for this session
 @property(nonatomic, copy) Profile *profile;
 
-// TODO(georgen): Actually use this. It's not well documented and the xterm code is a crazy mess :(.
-// For future reference, in tmux commit 8df3ec612a8c496fc2c975b8241f4e95faef5715 the list of xterm
-// keys gives a hint about how this is supposed to work (e.g., control-! sends a long CSI code). See also
-// the xterm manual (look for modifyOtherKeys, etc.) for valid values, and ctlseqs.html on invisible-island
-// for the meaning of the indices (under CSI > Ps; Pm m).
-@property(nonatomic, retain) NSArray *sendModifiers;
-
 // Return the address book that the session was originally created with.
 @property(nonatomic, readonly) Profile *originalProfile;
 
@@ -275,6 +268,10 @@ typedef enum {
 // Has output been received recently?
 @property(nonatomic, readonly) BOOL isProcessing;
 
+// Indicates if you're at the shell prompt and not running a command. Returns
+// NO if shell integration is not in use.
+@property(nonatomic, readonly) BOOL isAtShellPrompt;
+
 // Has it been at least a second since isProcessing became false?
 @property(nonatomic, readonly) BOOL isIdle;
 
@@ -332,7 +329,8 @@ typedef enum {
 - (void)resizeFromArrangement:(NSDictionary *)arrangement;
 
 - (void)runCommandWithOldCwd:(NSString*)oldCWD
-               forObjectType:(iTermObjectType)objectType;
+               forObjectType:(iTermObjectType)objectType
+              forceUseOldCWD:(BOOL)forceUseOldCWD;
 
 - (void)startProgram:(NSString *)program
            arguments:(NSArray *)prog_argv
@@ -497,6 +495,9 @@ typedef enum {
 
 // Kill the running command (if possible), print a banner, and rerun the profile's command.
 - (void)restartSession;
+
+// Make the text view the first responder.
+- (void)takeFocus;
 
 #pragma mark - Private for use by Scripting category
 
